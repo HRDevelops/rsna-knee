@@ -69,7 +69,10 @@ system_prompt: |
 
   ${calibration_instruction}
 
-  Respond with ONLY a single JSON object, no markdown fences, no commentary before or after. Top-level
+  Respond with ONLY a single JSON object — your response must start immediately with the "{"
+  character. Do NOT prefix it with any preamble like "Here is the JSON:" or "Here is the
+  structured output:" — that wastes output budget and risks truncating the JSON before it closes.
+  No markdown fences, no commentary before or after. Top-level
   keys are exactly the 12 column names given (including the apostrophe in "Baker's"). Each value is an
   object: {"present": "yes"|"no"|"uncertain", "probability": <float 0-1>, "severity_phrase": "<short
   quote or paraphrase of the relevant finding, or empty string if not mentioned>", "evidence_quote":
@@ -208,7 +211,12 @@ few_shot_examples:
 
 generation:
   temperature: 0.0
-  max_tokens: 1400
+  # 2026-09-06: full run showed 105/4407 (2.4%) parse failures, ALL from a "Here is the JSON:"
+  # preamble the model added despite instructions, which then ran the response out of budget
+  # before the closing brace (91% of failures were truncated mid-JSON, not malformed). Raised from
+  # 1400 -> 2200 and added an explicit no-preamble instruction above; retry also gets extra budget.
+  max_tokens: 2200
   # Retry once with a stricter "return ONLY valid JSON" reminder if the first response fails to parse.
   retry_on_parse_failure: true
   max_retries: 1
+  retry_max_tokens: 3000

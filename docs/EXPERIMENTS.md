@@ -79,3 +79,29 @@ AUC, gold-58 AUC, and public LB only when actually probed (budget ≤2 probes/we
   plain-scalar parsing) caught by the first Phase-1 smoke test job failing instantly. Fixed by
   fully double-quoting every such list item. **Lesson: validate config YAML files with
   `yaml.safe_load` before submitting a job that depends on them, not after.**
+- 2026-09-06: vLLM 0.11.0 (the version `pip install vllm` grabbed) requires Python 3.10+ syntax
+  internally (`X | None` unions evaluated eagerly at import time) and crashes on this cluster's
+  system Python 3.9 — pinned down to `vllm==0.6.3.post1` instead (pulls torch down to 2.4.0+cu121
+  automatically), which imports and runs cleanly. **Pin vLLM version explicitly going forward,
+  don't let `pip install vllm` grab latest on this cluster.**
+- 2026-09-06/07: **Cache build — full run completed, all 20 ZEN4 shards.** 24371 series, 24369 ok
+  (2 errors — both genuinely corrupt source DICOMs, pixel-data length mismatch, correctly caught
+  and skipped, not a pipeline bug), all 4407 studies represented. **9295/24371 series (38%) had
+  InstanceNumber order disagree with the geometric (ImagePositionPatient-projected) order** —
+  strong confirmation that EXECUTION_PLAN 2.2's concern was real, not theoretical; naive
+  InstanceNumber sorting would have mis-ordered over a third of series. 0 irregular-spacing flags.
+  Total cache size: **113GB** (uint8/384px/0.3mm only, no 512px variant) — lean, well within any
+  reasonable reading of the BeeGFS quota headroom regardless of the still-unresolved quota anomaly.
+- 2026-09-06/07: **Label engine v1 — full run completed** (24384, 3h32m, all 4407 studies), but
+  105/4407 (2.4%) failed JSON parsing even after the built-in retry. Root cause: 100% of failures
+  had the model prepend an unrequested "Here is the JSON:" preamble, and 91% of those then got
+  truncated mid-JSON before the closing brace — `max_tokens: 1400` wasn't enough headroom once a
+  preamble + long non-English (Greek/Croatian seen) verbatim evidence quotes ate into the budget.
+  A full parse failure meant ALL 12 targets for that study fell back to the imputed
+  present="uncertain"/probability=0.275 default, discarding whatever the model got right before
+  truncating — wasteful. Fixed: `rubric_v1.yaml` now explicitly instructs "start immediately with
+  {, no preamble" and raises `max_tokens` 1400→2200 (retry gets 3000). Backfilled just the 105
+  failed studies by dropping them from the checkpoint parquet and re-running label_gen.sbatch
+  (resumability by design skipped the other 4302 already-good studies). **Lesson: a hard
+  parse-or-discard-everything policy is expensive when failures cluster around token-budget
+  truncation — worth a partial-JSON salvage path if this recurs at scale in later rounds.**

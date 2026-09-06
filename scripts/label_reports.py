@@ -196,6 +196,10 @@ def run(args: argparse.Namespace) -> None:
         temperature=gen_cfg.get("temperature", 0.0),
         max_tokens=gen_cfg.get("max_tokens", 1400),
     )
+    retry_sampling_params = SamplingParams(
+        temperature=gen_cfg.get("temperature", 0.0),
+        max_tokens=gen_cfg.get("retry_max_tokens", gen_cfg.get("max_tokens", 1400)),
+    )
     max_retries = gen_cfg.get("max_retries", 1) if gen_cfg.get("retry_on_parse_failure", True) else 0
 
     all_rows: list[dict] = [] if existing is None else existing.to_dict("records")
@@ -221,9 +225,10 @@ def run(args: argparse.Namespace) -> None:
             fail_idx = [i for i, r in enumerate(chunk_rows) if not r["parse_ok"]]
             if not fail_idx:
                 break
-            retry_prompts = [prompts[i] + "\n\nREMINDER: output ONLY valid JSON, nothing else."
+            retry_prompts = [prompts[i] + "\n\nREMINDER: start your response immediately with "
+                              "\"{\" — no preamble text, no markdown fences, output ONLY valid JSON."
                               for i in fail_idx]
-            retry_outputs = llm.generate(retry_prompts, sampling_params)
+            retry_outputs = llm.generate(retry_prompts, retry_sampling_params)
             for i, o in zip(fail_idx, retry_outputs):
                 raw_text = o.outputs[0].text
                 chunk_rows[i] = parse_response(rubric, chunk["study_uid"].iloc[i], raw_text)
