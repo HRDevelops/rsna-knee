@@ -14,11 +14,11 @@
 
 set -euo pipefail
 source ~/.bashrc
-module load Python/3.11.5-GCCcore-13.2.0
-# module load cuda/12.1        # confirm exact name via `module avail cuda`
-source ~/rsna_knee/venv/bin/activate
-export RSNA_ROOT=${RSNA_ROOT:-/scratch/$USER/rsna_knee}
-cd ~/rsna_knee/code
+# No environment modules or conda on this cluster — plain venv on system python3.
+# CUDA is provided by the GPU node itself (verify with `nvidia-smi` inside the job).
+source /shared/home/$USER/rsna-knee/venv/bin/activate
+export RSNA_ROOT=${RSNA_ROOT:-/shared/home/$USER/rsna-knee}
+cd "$RSNA_ROOT/code"
 export PYTHONPATH="${PYTHONPATH:-}:$(pwd)"
 
 CONFIG=${1:-configs/exp001_dinov2s_slot.yaml}

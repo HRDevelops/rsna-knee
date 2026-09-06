@@ -13,13 +13,16 @@
 
 set -euo pipefail
 source ~/.bashrc
-module load Python/3.11.5-GCCcore-13.2.0
-source ~/rsna_knee/venv/bin/activate
-export RSNA_ROOT=${RSNA_ROOT:-/scratch/$USER/rsna_knee}
+# No environment modules or conda on this cluster — plain venv on system python3.
+source /shared/home/$USER/rsna-knee/venv/bin/activate
+export RSNA_ROOT=${RSNA_ROOT:-/shared/home/$USER/rsna-knee}
 export HF_HOME=$RSNA_ROOT/hf_cache
-cd ~/rsna_knee/code
+cd "$RSNA_ROOT/code"
 export PYTHONPATH="${PYTHONPATH:-}:$(pwd)"
 
+# Pre-download the model from the LOGIN NODE before submitting this job — outbound internet
+# from the H100 compute nodes is unconfirmed (see docs/HPC_WORKFLOW.md); this job assumes the
+# model is already cached under $HF_HOME.
 MODEL=${1:-Qwen/Qwen2.5-72B-Instruct-AWQ}
 python scripts/label_reports.py --model "$MODEL" \
     --reports "$RSNA_ROOT/data/raw/train.csv" \

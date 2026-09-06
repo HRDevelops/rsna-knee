@@ -9,7 +9,7 @@ if [[ $# -lt 1 ]]; then
 fi
 
 HPC_HOST="${RSNA_HPC_HOST:-nu-hpc}"
-HPC_CODE_DIR="${RSNA_HPC_CODE_DIR:-~/rsna_knee/code}"
+HPC_CODE_DIR="${RSNA_HPC_CODE_DIR:-/shared/home/husnain.rasool/rsna-knee/code}"
 
 SBATCH_SCRIPT="$1"
 shift

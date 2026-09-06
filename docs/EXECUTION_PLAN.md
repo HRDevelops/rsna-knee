@@ -10,7 +10,19 @@ quality is the binding constraint on every image model trained downstream.
 
 ## PHASE 0 — Infrastructure (Sep 1–4)
 
-0.1 HPC recon (30 min, interactive):
+**STATUS 2026-09-06: done except the heavy torch/vllm install.** Original sub-steps below are kept
+for the record but were superseded by direct recon — see `docs/HPC_WORKFLOW.md`'s "CONFIRMED"
+section for the real cluster facts (no `/scratch`, no modules/conda, BeeGFS at `/shared/home`,
+`--qos=issai-h100` mandatory on H100, GPU nodes do have internet, H100 80GB confirmed). Data is
+already downloaded and extracted at `/shared/home/$USER/rsna-knee/data/raw/` (4407 study dirs
+verified). Repo is pushed to `/shared/home/$USER/rsna-knee/code/` via `scripts/push.sh`. venv is
+created at `/shared/home/$USER/rsna-knee/venv` (system python3.9, no modules involved) with
+pydicom/pylibjpeg/pandas/pyarrow/scikit-learn/PyYAML installed — `python-gdcm` was dropped, it has
+no prebuilt wheel for this platform and fails to build (needs cmake, not installed); pydicom +
+pylibjpeg's own JPEG/JPEG2000 plugins are sufficient. torch/vllm not yet installed (large,
+deliberately deferred until right before they're needed).
+
+0.1 HPC recon (30 min, interactive) — ORIGINAL PLAN, see status note above for what actually applies:
     ssh nu-hpc
     df -h $HOME; quota -s 2>/dev/null; lfs quota -h -u $USER /scratch 2>/dev/null
     module avail Python; module avail cuda; module avail CUDA
@@ -20,31 +32,31 @@ quality is the binding constraint on every image model trained downstream.
       (curl -sI https://pypi.org from an srun shell). Competition data is likely
       100–300 GB; it MUST live on scratch/project storage, not $HOME.
 
-0.2 Environment on HPC:
-    module load Python/3.11.5-GCCcore-13.2.0
-    python -m venv ~/rsna_knee/venv && source ~/rsna_knee/venv/bin/activate
+0.2 Environment on HPC — use `/shared/home/$USER/rsna-knee/venv` + plain pip (no `module load`,
+    no conda available on this cluster):
+    python3 -m venv /shared/home/$USER/rsna-knee/venv
+    source /shared/home/$USER/rsna-knee/venv/bin/activate
     pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-    pip install pydicom pylibjpeg pylibjpeg-libjpeg pylibjpeg-openjpeg python-gdcm \
+    pip install pydicom pylibjpeg pylibjpeg-libjpeg pylibjpeg-openjpeg \
                 timm transformers accelerate pandas pyarrow scikit-learn \
                 iterative-stratification albumentations wandb vllm
-    (If compute nodes lack internet: install everything from the login node; vLLM model
-     downloads also from login node via `huggingface-cli download`.)
+    (Compute nodes DO have internet — confirmed via sbatch job with --qos=issai-h100 — so this
+     can run inside a job too, not just on the login node. Skip python-gdcm, see status note.)
 
-0.3 Kaggle CLI on HPC + data download (see docs/HPC_WORKFLOW.md §2 for full commands):
-    pip install kaggle; put kaggle.json in ~/.kaggle (chmod 600)
-    kaggle competitions files -c rsna-knee-abnormality-detection   # check total size FIRST
-    cd /scratch/$USER/rsna_knee/data   (or wherever quota allows)
-    nohup kaggle competitions download -c rsna-knee-abnormality-detection &
-    unzip -q *.zip   (or 7z if multi-part). Verify: 4,407 study dirs, 24,371 series dirs.
+0.3 Kaggle CLI on HPC + data download — ALREADY DONE for this project, data lives at
+    /shared/home/$USER/rsna-knee/data/raw/ (see docs/HPC_WORKFLOW.md §2 for the commands, kept
+    for reference / re-download only).
 
-0.4 Repo + sync loop: git repo local, `rsync -avz` push code → HPC, pull
-    artifacts/logs/OOF back. Claude Code edits locally; HPC only runs.
+0.4 Repo + sync loop: DONE. Local machine has no `rsync` (plain Git Bash) — `scripts/push.sh` /
+    `pull.sh` auto-fall-back to tar-over-ssh (no delete-sync). `git init` done locally.
 
-0.5 Decode audit job (1 GPU-hour): decode every series header + 1 slice; log transfer syntax,
-    shape, PixelSpacing, SliceThickness, orientation, which of the 86 tags actually present
-    (ESPECIALLY Laterality/ImageLaterality/PatientPosition). This decides the side-detection route.
+0.5 Decode audit job: `scripts/decode_audit.py` written, not yet run against the full dataset —
+    next step. Will log transfer syntax, shape, PixelSpacing, SliceThickness, orientation, which
+    of the 86 tags actually present (ESPECIALLY Laterality/ImageLaterality/PatientPosition). This
+    decides the side-detection route.
 
-Deliverable: data on HPC, env green, `docs/DECODE_AUDIT.md` with tag census.
+Deliverable: data on HPC (✓), env green (lightweight deps ✓, torch/vllm pending),
+`docs/DECODE_AUDIT.md` with tag census (pending — run `scripts/decode_audit.py` next).
 
 ## PHASE 1 — Label engine v1 (Sep 4–12) ← highest leverage
 
