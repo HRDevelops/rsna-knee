@@ -34,6 +34,12 @@ class SlotModel(nn.Module):
         self.backbone = timm.create_model(
             backbone_name, pretrained=True, num_classes=0, in_chans=3, dynamic_img_size=True
         )
+        # Chunking the backbone calls (see encode_series) does NOT reduce training memory on its
+        # own — autograd keeps every chunk's activations alive for backward regardless of how the
+        # forward is split (confirmed by OOM persisting after adding chunking). Gradient
+        # checkpointing actually discards and recomputes activations, which is what's needed for
+        # a B*S*T up to ~1152-image effective batch through a ViT.
+        self.backbone.set_grad_checkpointing(enable=True)
         D = self.backbone.num_features
         self.embed_dim = D
 
@@ -51,25 +57,44 @@ class SlotModel(nn.Module):
         self.target_attn = nn.MultiheadAttention(D, slot_heads, batch_first=True)
         self.head = nn.Linear(D, 1)
 
-    def encode_series(self, volumes: torch.Tensor) -> torch.Tensor:
-        """volumes: [B, S, T, H, W] single-channel -> series embeddings [B, S, D]."""
-        B, S, T, H, W = volumes.shape
-        x = volumes.reshape(B * S * T, 1, H, W).repeat(1, 3, 1, 1)
-        feats = self.backbone(x)  # [B*S*T, D]
-        D = feats.shape[-1]
-        feats = feats.view(B * S, T, D)
+    def encode_series(self, volumes: torch.Tensor, mask: torch.Tensor, chunk_size: int = 128) -> torch.Tensor:
+        """volumes: [B, S, T, H, W] single-channel, mask: [B,S] bool -> series embeddings [B, S, D].
 
-        pos = torch.linspace(0, 1, T, device=feats.device).view(1, T, 1).expand(B * S, T, 1)
+        A naive B*S*T forward (up to ~8*6*24=1152 images at once) OOMs an 80GB H100 outright —
+        fixed two ways: (1) absent slots (mask=False) are skipped entirely rather than wastefully
+        encoding zero-tensors, since most studies don't fill all 6 slots; (2) the backbone is
+        called in chunks to bound peak activation memory regardless of how many valid slots exist.
+        """
+        B, S, T, H, W = volumes.shape
+        D = self.embed_dim
+        device = volumes.device
+
+        flat_mask = mask.reshape(B * S)
+        valid_idx = flat_mask.nonzero(as_tuple=True)[0]
+
+        series_embed = torch.zeros(B * S, D, device=device, dtype=volumes.dtype)
+        if valid_idx.numel() == 0:
+            return series_embed.view(B, S, D)
+
+        valid_volumes = volumes.reshape(B * S, T, H, W)[valid_idx]  # [N_valid, T, H, W]
+        n_valid = valid_volumes.shape[0]
+        x = valid_volumes.reshape(n_valid * T, 1, H, W).repeat(1, 3, 1, 1)
+
+        feats_chunks = [self.backbone(x[start:start + chunk_size]) for start in range(0, x.shape[0], chunk_size)]
+        feats = torch.cat(feats_chunks, dim=0).view(n_valid, T, D)
+
+        pos = torch.linspace(0, 1, T, device=device).view(1, T, 1).expand(n_valid, T, 1)
         feats = feats + self.slice_pos_embed(pos)
 
-        cls = self.slice_cls.expand(B * S, 1, D)
+        cls = self.slice_cls.expand(n_valid, 1, D)
         seq = torch.cat([cls, feats], dim=1)
         seq = self.slice_transformer(seq)
-        return seq[:, 0].view(B, S, D)
+        series_embed[valid_idx] = seq[:, 0].to(series_embed.dtype)
+        return series_embed.view(B, S, D)
 
     def forward(self, volumes: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """volumes: [B,6,T,H,W], mask: [B,6] bool (True=present) -> logits [B, num_targets]."""
-        series_embed = self.encode_series(volumes)  # [B,6,D]
+        series_embed = self.encode_series(volumes, mask)  # [B,6,D]
         series_embed = series_embed + self.slot_embed.weight.unsqueeze(0)
 
         key_padding_mask = ~mask  # True = ignore
