@@ -1,0 +1,309 @@
+# Rubric v2 — LLM report-to-label extraction (CLAUDE.md §2, §6; EXECUTION_PLAN Phase 1.2)
+#
+# Changes from v1 (2026-09-07 strategy review, driven by docs/gold_agreement_v1.md +
+# artifacts/error_ledger_v1.csv — see EXPERIMENTS.md decisions log for the full rationale):
+#   1. CONTUSION: fracture-adjacent marrow edema is now NEGATIVE (Fracture carries it) instead of
+#      "not mutually exclusive". Mild-severity discount removed for this label specifically.
+#   2. SYNOVITIS: added a label-specific few-shot for "mild synovitis" -> negative. Silent-report
+#      cases now get a conditional prior keyed off the Effusion field instead of a flat negative
+#      (see `conditional_priors` section) — encoded in code (scripts/label_reports.py), not just
+#      prompted, since it's a deterministic cross-field rule.
+#   3. Evidence quotes made explicitly optional + shorter, to cut token load on Greek/Croatian
+#      reports that were driving the v1 truncation failures. retry_max_tokens raised further.
+#
+# Explicitly NOT encoded this round (per strategy review — single-example, logged as open ledger
+# items, not rubric rules): muscle (soft-tissue) contusion as a Contusion-positive criterion, and
+# the "mild residual bone contusion should still be positive" severity exception. Revisit only if
+# they recur at scale in a later error ledger.
+#
+# Core principle this whole file exists to encode: ground truth was created by IMAGE review
+# with severity thresholding, "on the fence" graded NEGATIVE. Radiology reports systematically
+# OVER-CALL mild disease relative to that threshold. The rubric's job is to make the LLM apply
+# the annotators' threshold, not the reporting radiologist's threshold. Every per-target section
+# below is a *hypothesis* — tune against gold-58 per-label agreement (scripts/eval_label_agreement.py).
+#
+# Targets, in the exact submission column order (note the apostrophe in Baker's):
+targets:
+  - key: ACL
+    column: "ACL"
+  - key: MCL
+    column: "MCL"
+  - key: MEDIAL_MENISCUS
+    column: "Medial Meniscus"
+  - key: LATERAL_MENISCUS
+    column: "Lateral Meniscus"
+  - key: MEDIAL_OA
+    column: "Medial OA"
+  - key: LATERAL_OA
+    column: "Lateral OA"
+  - key: PF_OA
+    column: "PF OA"
+  - key: EFFUSION
+    column: "Effusion"
+  - key: SYNOVITIS
+    column: "Synovitis"
+  - key: BAKERS
+    column: "Baker's"
+  - key: CONTUSION
+    column: "Contusion"
+  - key: FRACTURE
+    column: "Fracture"
+
+# Confidence/probability calibration instruction shared across all targets.
+# This is the single most important rule in the file: it directly counteracts the reports'
+# systematic over-calling of mild disease.
+calibration_instruction: |
+  Output a probability in [0, 1] for each target, not just a yes/no. Calibrate it against the
+  question "would two MSK radiologists doing an independent IMAGE review, applying a severity
+  threshold where anything borderline is called NEGATIVE, agree this finding is present?" — not
+  "does the report mention this finding at all."
+  - Clear-cut positive (tear, complete rupture, moderate/large/marked finding, unambiguous fracture
+    line): probability 0.75-0.97.
+  - Clear-cut negative (explicitly normal/intact/absent, or not mentioned anywhere in the report):
+    probability 0.03-0.15.
+  - Uncertain, borderline, mild/grade-1, "cannot exclude", degenerative-but-not-torn, trace/physiologic,
+    or any wording that reads as hedging: probability 0.20-0.35 (negative-leaning, NOT 0.5). The
+    annotators graded "on the fence" as negative — mirror that, don't split the difference.
+  - Never output exactly 0.5 as a default. If you are unsure, pick a negative-leaning value in the
+    0.20-0.35 band per the rule above, and say so in the evidence field.
+  - EXCEPTION: some labels have a per-label calibration override in their rubric section below
+    (currently: Contusion). Where a per-label override conflicts with this general rule, follow
+    the per-label override instead.
+
+system_prompt: |
+  You are an expert musculoskeletal (MSK) radiologist assisting with a research dataset. You will
+  be given one free-text knee MRI report (the report may be in Spanish, English, French, Dutch,
+  German, Greek, Croatian/Serbian, or another European language — read it in its original
+  language, do not ask for translation).
+
+  Extract a structured judgement for exactly these 12 findings: ACL tear, MCL injury, Medial
+  Meniscus tear, Lateral Meniscus tear, Medial compartment OA, Lateral compartment OA,
+  Patellofemoral (PF) OA, Joint effusion, Synovitis, Baker's (popliteal) cyst, Bone contusion
+  (marrow edema without fracture), Fracture (including insufficiency/stress fracture).
+
+  Apply SEVERITY THRESHOLDING per the rubric below — the ground truth for this dataset was created
+  by image review where borderline/mild findings were graded NEGATIVE, even though many reports
+  mention them. Your job is to predict that image-review threshold, not to transcribe everything
+  the report mentions.
+
+  ${calibration_instruction}
+
+  Respond with ONLY a single JSON object — your response must start immediately with the "{"
+  character. Do NOT prefix it with any preamble like "Here is the JSON:" or "Here is the
+  structured output:" — that wastes output budget and risks truncating the JSON before it closes.
+  No markdown fences, no commentary before or after. Top-level
+  keys are exactly the 12 column names given (including the apostrophe in "Baker's"). Each value is an
+  object: {"present": "yes"|"no"|"uncertain", "probability": <float 0-1>, "severity_phrase": "<short
+  quote or paraphrase of the relevant finding, or empty string if not mentioned>", "evidence_quote":
+  "<SHORT verbatim quote from the report, or empty string>"}.
+  If a finding is never mentioned, use present="no", probability in the clear-negative band, and empty
+  strings for the text fields (absence of mention is evidence of absence for these targets).
+  IMPORTANT — keep responses compact to avoid running out of output budget, especially for
+  non-Latin-script reports (Greek, Cyrillic) where quotes cost more tokens: evidence_quote is
+  OPTIONAL — leave it as "" whenever the severity_phrase alone already justifies your probability,
+  or whenever present="no". Never quote more than ~12 words. Do not pad severity_phrase either —
+  a short fragment is enough, you do not need a full sentence.
+
+# Per-target rubric. Each entry's `positive` / `negative` lists are phrase patterns / concepts
+# (not exhaustive, not regex) meant to steer the LLM's judgement — the model should generalize
+# from these to synonyms and other languages, not string-match them.
+label_rubrics:
+  ACL:
+    positive:
+      - "partial tear, complete tear/rupture, rotura del LCA, discontinuity, non-visualization of fibers"
+      - "ACL tear, desgarro, déchirure du LCA, Ruptur des VKB"
+    negative:
+      - "intact, sprain grade 1, mucoid degeneration, intact but edematous, thickened but continuous"
+      - "mild signal change without discontinuity"
+    notes: "Grade 1 sprain / mucoid degeneration without discontinuity is NEGATIVE. Verify empirically."
+
+  MCL:
+    positive:
+      - "partial tear, complete tear, grade 2-3 sprain with fiber discontinuity"
+    negative:
+      - "grade 1 sprain, edema/thickening without discontinuity, intact"
+    notes: "Same logic as ACL — thresholded on structural disruption, not edema alone."
+
+  MEDIAL_MENISCUS:
+    positive:
+      - "tear reaching the articular surface, flap tear, bucket-handle tear, radial tear, root tear, macerated/complex tear, rotura de menisco medial/interno"
+    negative:
+      - "degeneration, intrasubstance signal, grade 1-2 signal (Stoller) not reaching the surface, señal de degeneración, mucoid degeneration"
+    notes: >
+      Highest-confidence known gap (CLAUDE.md §2). "Degeneration" / "intrasubstance" / grade 1-2
+      signal not reaching the articular surface = NEGATIVE even though reports often flag it.
+      Only surface-reaching tears and structural tear morphologies = POSITIVE.
+
+  LATERAL_MENISCUS:
+    positive: "same as MEDIAL_MENISCUS, mirrored to the lateral meniscus."
+    negative: "same as MEDIAL_MENISCUS, mirrored to the lateral meniscus."
+    notes: "Same rubric as medial meniscus; keep independent per-compartment judgement."
+
+  MEDIAL_OA:
+    positive:
+      - "moderate-severe joint space narrowing, grade 3-4 chondral loss / full-thickness cartilage defect, significant osteophytes with subchondral change, in the MEDIAL tibiofemoral compartment"
+    negative:
+      - "mild chondropathy, grade 1-2 chondral changes, trace osteophytes, cambios condrales leves"
+    notes: "Compartment-specific — do not let lateral or PF findings leak into this field."
+
+  LATERAL_OA:
+    positive: "same as MEDIAL_OA, mirrored to the lateral tibiofemoral compartment."
+    negative: "same as MEDIAL_OA, mirrored to the lateral tibiofemoral compartment."
+    notes: "Compartment-specific — lateral tibiofemoral only."
+
+  PF_OA:
+    positive:
+      - "moderate-severe patellofemoral joint space narrowing, full-thickness patellar/trochlear cartilage loss, significant patellofemoral osteophytes"
+    negative:
+      - "mild patellar chondromalacia, grade 1-2 chondral changes, condromalacia leve"
+    notes: "Patellofemoral compartment only — distinct from tibiofemoral OA fields."
+
+  EFFUSION:
+    positive:
+      - "moderate effusion, large effusion, derrame moderado/importante"
+    negative:
+      - "trace fluid, physiologic fluid, minimal fluid, mínima cantidad de líquido fisiológico"
+    notes: "Trace/physiologic = NEGATIVE. Moderate/large = POSITIVE. Small/mild is the ambiguous band — use the 0.20-0.35 uncertain probability, lean on exact wording. NOTE: this field also drives the Synovitis conditional prior when reports are silent on synovitis (see `conditional_priors` below) — calibrate it carefully, its probability now has a second downstream use."
+
+  SYNOVITIS:
+    positive:
+      - "synovial thickening with enhancement/hypertrophy described as more than trace, sinovitis"
+    negative:
+      - "not mentioned, mild/trace synovial reaction, mild synovitis, mínima sinovitis"
+    notes: >
+      v2 CHANGE: reports frequently under-specify this label. When the report is SILENT (never
+      mentions synovitis/synovial findings at all), do NOT just default to a flat clear-negative —
+      the code applies a conditional prior based on the Effusion field instead (see
+      `conditional_priors` below), because synovitis and effusion are physiologically correlated
+      and a silent-on-synovitis report with a large effusion is more likely to have unreported
+      synovitis than one with no effusion at all. When the report DOES explicitly mention
+      synovitis, your normal LLM judgement still applies (this conditional-prior override is only
+      for the silent case). Per the v1 error ledger, "mild synovitis" / "mínima sinovitis" wording
+      was inconsistently scored — see the new few-shot example below, treat these as NEGATIVE like
+      every other mild/trace finding in this rubric.
+
+  BAKERS:
+    positive:
+      - "popliteal/Baker's cyst explicitly described as present, of any reported size unless explicitly called trace/tiny"
+    negative:
+      - "not mentioned, quiste popliteo mínimo/incidental explicitly downplayed"
+    notes: "Usually reported cleanly when present; less ambiguity than most other targets."
+
+  CONTUSION:
+    positive:
+      - "INDEPENDENT bone marrow edema / bone bruise that is NOT described as adjacent to, underlying, or attributed to a fracture — includes kissing contusions / pivot-shift pattern (e.g. lateral femoral condyle + posterior lateral tibial plateau bone bruises from an ACL-injury mechanism), or edema at a site with no described fracture nearby"
+      - "contusión ósea, edema óseo postraumático, bone bruise — only when independent of any described fracture"
+    negative:
+      - "not mentioned"
+      - "bone marrow edema that IS described as adjacent to, underlying, or associated with a described fracture or fracture line — that edema belongs to FRACTURE, do not also count it as Contusion"
+    notes: >
+      v2 CHANGE (per 2026-09-07 gold-58 error ledger: 13/16 Contusion disagreements were exactly
+      this pattern). Contusion and Fracture are NO LONGER treated as freely co-occurring: when the
+      report describes marrow edema in the same breath as a fracture/fracture line at the same
+      location ("fracture with adjacent edema", "subchondral fracture line with underlying edema",
+      "insufficiency fracture with adjacent bone marrow oedema"), that is FRACTURE positive and
+      CONTUSION NEGATIVE — the edema does not get double-counted. Contusion positive requires
+      independent marrow edema: a genuinely separate bone bruise (classic kissing-contusion /
+      pivot-shift pattern from an ACL mechanism) or edema at a site where no fracture is described.
+      CALIBRATION OVERRIDE (per the exception clause in the shared calibration_instruction): do NOT
+      apply the general mild/grade-1 -> 0.20-0.35 discount to Contusion. Presence of independent
+      marrow edema is a presence/absence call, not a graded-severity call like OA/meniscus — "mild"
+      or "small" independent bone bruise still scores in the clear-positive band (0.75-0.97), not
+      the uncertain band. Open items NOT encoded this round (too few examples in the v1 ledger, n=1
+      each — log any new occurrences in the next error ledger rather than guessing at a rule):
+      whether muscle/soft-tissue contusion (not bone marrow) should count as Contusion positive.
+
+  FRACTURE:
+    positive:
+      - "cortical break, visible fracture line, insufficiency fracture, stress fracture, fractura, trait de fracture"
+    negative:
+      - "not mentioned, marrow edema/contusion only with no cortical break described"
+    notes: "Insufficiency/stress fracture counts as POSITIVE even without acute trauma history."
+
+# Conditional priors: deterministic cross-field overrides applied in code (scripts/label_reports.py)
+# AFTER the LLM's raw per-target JSON is parsed, not something the LLM computes itself — these are
+# precise numeric rules, more reliable and cheaper (in tokens) as code than as a prompted
+# instruction. A target only gets its conditional prior applied when its OWN parsed result looks
+# "silent" (present == "no" AND both severity_phrase and evidence_quote are empty — i.e. the LLM
+# found literally nothing to say about it, distinct from an explicit "no synovitis" statement,
+# which the LLM would normally still leave silent-shaped under this schema, so this conditional
+# prior applies to the whole not-mentioned-at-all bucket by design, not just true silence).
+conditional_priors:
+  SYNOVITIS:
+    based_on_target: EFFUSION
+    tiers:  # evaluated top to bottom, first match wins, based on the Effusion target's probability
+      - effusion_probability_gte: 0.35
+        prior_probability: 0.55
+        label: "moderate/large effusion"
+      - effusion_probability_gte: 0.15
+        prior_probability: 0.35
+        label: "small/trace effusion"
+      - effusion_probability_gte: 0.0
+        prior_probability: 0.15
+        label: "no effusion"
+    confidence_weight: 0.1
+    source_tag: "conditional_prior"
+
+few_shot_examples:
+  - report: >
+      Rodilla derecha. LCA y LCP íntegros. Menisco interno: leve señal de degeneración en cuerno
+      posterior sin contactar con la superficie articular, sin rotura. Menisco externo normal.
+      Mínima cantidad de líquido fisiológico. Cartílago conservado. Sin fracturas.
+    expected_pattern: >
+      ACL/MCL negative (intact), Medial Meniscus negative (degeneration not reaching surface,
+      NOT a tear), Lateral Meniscus negative, Effusion negative (physiologic/trace), Fracture
+      negative, OA fields negative (cartilage conserved). This is the canonical
+      report-overcalls-mild-disease trap: a naive reader might flag the meniscus as abnormal
+      because it's mentioned, but the correct image-review-threshold label is negative.
+
+  - report: >
+      Genou gauche. Rupture complète du ligament croisé antérieur. Désinsertion de la corne
+      postérieure du ménisque interne avec trait de fracture non retrouvé. Épanchement articulaire
+      modéré. Kyste poplité de 2cm.
+    expected_pattern: >
+      ACL positive (complete rupture, high confidence), Medial Meniscus positive (root
+      tear/désinsertion is a structural tear), Effusion positive (moderate), Baker's positive
+      (cyst present), Fracture negative (explicitly "trait de fracture non retrouvé" = no fracture
+      line found).
+
+  - report: >
+      Right knee MRI. Grade 1 sprain of the MCL with surrounding edema, fibers remain continuous.
+      Trace joint effusion. Mild patellofemoral chondromalacia, grade 1-2. No meniscal tear. No
+      fracture or contusion identified.
+    expected_pattern: >
+      MCL negative (grade 1 sprain, fibers continuous = below threshold), Effusion negative
+      (trace), PF OA negative (mild grade 1-2 chondromalacia below threshold), Medial/Lateral
+      Meniscus negative (explicitly no tear), Fracture and Contusion negative (explicitly none).
+
+  - report: >
+      Left knee MRI. Mild synovitis of the knee joint with trace effusion. ACL, PCL, and collateral
+      ligaments intact. Menisci normal. No fracture, no bone contusion. Mild chondromalacia patella,
+      grade 1.
+    expected_pattern: >
+      Synovitis NEGATIVE despite being explicitly mentioned — "mild synovitis" is a hedged/mild
+      finding, same threshold rule as every other label in this rubric (mild = below the
+      image-review threshold). This is the exact pattern the v1 rubric got wrong: do not treat an
+      explicit mention of "synovitis" as automatically positive — read the severity qualifier.
+      Effusion negative (trace), PF OA negative (mild grade 1), everything else negative/intact.
+
+  - report: >
+      MRI knee. Insufficiency fracture of the medial femoral condyle with adjacent bone marrow
+      oedema. No meniscal or ligamentous tear. No effusion.
+    expected_pattern: >
+      Fracture POSITIVE (insufficiency fracture, clear-cut). Contusion NEGATIVE — the bone marrow
+      oedema here is explicitly "adjacent to" the fracture, so it is attributed to Fracture only,
+      not double-counted as an independent Contusion. This is the v2 Contusion/Fracture
+      disambiguation rule — contrast with a case where edema is described at a site with NO
+      fracture mentioned nearby, which would be Contusion positive instead.
+
+generation:
+  temperature: 0.0
+  max_tokens: 2200
+  retry_on_parse_failure: true
+  max_retries: 1
+  # v1 full run: 105/4407 (2.4%) parse failures, 91% truncated mid-JSON, concentrated in
+  # Greek/Croatian reports with verbose verbatim evidence quotes. Backfill with max_tokens=2200/
+  # retry_max_tokens=3000 cut this to 41/4407 (0.93%), still mostly truncation. v2 both shortens
+  # required output (evidence_quote now optional/short, see system_prompt) AND raises the retry
+  # budget further — target <10 residual failures per the strategy review.
+  retry_max_tokens: 4500

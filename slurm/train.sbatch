@@ -23,4 +23,4 @@ export PYTHONPATH="${PYTHONPATH:-}:$(pwd)"
 
 CONFIG=${1:-configs/exp001_dinov2s_slot.yaml}
 python scripts/train.py --config "$CONFIG" --fold "$SLURM_ARRAY_TASK_ID" \
-    --out "$RSNA_ROOT/artifacts" --resume auto
+    --out "$RSNA_ROOT/artifacts" --resume auto --max-hours 7.0

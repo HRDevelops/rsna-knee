@@ -110,6 +110,11 @@ def extract_json(text: str) -> dict | None:
     return None
 
 
+_IMPUTED_FAILURE_CONFIDENCE_WEIGHT = 0.1  # rubric v2 strategy review: residual parse failures
+                                            # get label priors + this low confidence weight, not
+                                            # discarded from training entirely.
+
+
 def coerce_target_value(raw: dict | None) -> dict:
     if not isinstance(raw, dict):
         return {
@@ -118,6 +123,8 @@ def coerce_target_value(raw: dict | None) -> dict:
             "severity_phrase": "",
             "evidence_quote": "",
             "imputed": True,
+            "confidence_weight": _IMPUTED_FAILURE_CONFIDENCE_WEIGHT,
+            "source": "imputed_failure",
         }
     present = str(raw.get("present", "uncertain")).strip().lower()
     if present not in _VALID_PRESENT:
@@ -133,7 +140,53 @@ def coerce_target_value(raw: dict | None) -> dict:
         "severity_phrase": str(raw.get("severity_phrase", "") or ""),
         "evidence_quote": str(raw.get("evidence_quote", "") or ""),
         "imputed": False,
+        "confidence_weight": 1.0,
+        "source": "llm",
     }
+
+
+def is_silent(coerced: dict) -> bool:
+    """True when the LLM said nothing about this target at all (not an explicit negative
+    statement, just absence of any mention) — the signal conditional_priors keys off."""
+    return (
+        coerced["present"] == "no"
+        and coerced["severity_phrase"] == ""
+        and coerced["evidence_quote"] == ""
+        and not coerced["imputed"]
+    )
+
+
+def apply_conditional_priors(rubric: dict, row: dict) -> None:
+    """Deterministic cross-field overrides (rubric v2) applied after parsing, in-place on `row`.
+    Only fires when the target's own result looks silent (see is_silent) — an explicit negative
+    statement from the LLM is left alone, this only overrides "found nothing to say" cases."""
+    priors = rubric.get("conditional_priors", {})
+    for target_key, cfg in priors.items():
+        target_col = next(
+            (t["column"] for t in rubric["targets"] if t["key"] == target_key), None
+        )
+        based_on_col = next(
+            (t["column"] for t in rubric["targets"] if t["key"] == cfg["based_on_target"]), None
+        )
+        if target_col is None or based_on_col is None:
+            continue
+
+        target_state = {
+            "present": row[f"{target_col}__present"],
+            "severity_phrase": row[f"{target_col}__severity_phrase"],
+            "evidence_quote": row[f"{target_col}__evidence_quote"],
+            "imputed": row[f"{target_col}__imputed"],
+        }
+        if not is_silent(target_state):
+            continue
+
+        based_on_prob = row[f"{based_on_col}__probability"]
+        for tier in cfg["tiers"]:
+            if based_on_prob >= tier["effusion_probability_gte"]:
+                row[f"{target_col}__probability"] = tier["prior_probability"]
+                row[f"{target_col}__confidence_weight"] = cfg["confidence_weight"]
+                row[f"{target_col}__source"] = cfg["source_tag"]
+                break
 
 
 def parse_response(rubric: dict, study_uid: str, raw_text: str) -> dict:
@@ -148,6 +201,10 @@ def parse_response(rubric: dict, study_uid: str, raw_text: str) -> dict:
         row[f"{col}__severity_phrase"] = coerced["severity_phrase"]
         row[f"{col}__evidence_quote"] = coerced["evidence_quote"]
         row[f"{col}__imputed"] = coerced["imputed"]
+        row[f"{col}__confidence_weight"] = coerced["confidence_weight"]
+        row[f"{col}__source"] = coerced["source"]
+    if "conditional_priors" in rubric and parsed is not None:
+        apply_conditional_priors(rubric, row)
     return row
 
 
