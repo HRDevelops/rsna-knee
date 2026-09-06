@@ -1,0 +1,42 @@
+# Baseline: 2.5D slot model, DINOv2 ViT-S/14
+experiment: exp001_dinov2s_slot
+seed: 42
+data:
+  cache_dir: ${RSNA_ROOT}/data/cache
+  labels: ${RSNA_ROOT}/artifacts/labels/labels_v1.parquet
+  folds: ${RSNA_ROOT}/artifacts/folds.parquet
+  gold_reference: ${RSNA_ROOT}/artifacts/gold58.parquet   # never trained on
+  slices_per_series: 24
+  image_size: 384
+  slots: [Sagittal_FS, Sagittal_nonFS, Coronal_FS, Coronal_nonFS, Axial_FS, Axial_nonFS]
+  laterality_normalize: true
+model:
+  backbone: vit_small_patch14_dinov2.lvd142m   # timm
+  slice_agg: transformer      # 2 layers, 4 heads, pos-enc by normalized slice index
+  study_head: cross_slot_transformer   # 2 layers + per-target attention pooling
+  num_targets: 12
+train:
+  epochs: 25
+  batch_size_studies: 8
+  lr: 2.0e-4
+  backbone_lr_mult: 0.1
+  weight_decay: 0.05
+  scheduler: cosine
+  warmup_epochs: 2
+  precision: bf16
+  ema: 0.999
+  loss: bce_soft            # soft labels, weighted by labeler confidence
+  label_confidence_weighting: true
+aug:
+  rotate_deg: 10
+  scale: 0.1
+  translate: 0.05
+  intensity_jitter: 0.1
+  coarse_dropout: true
+  laterality_swap_prob: 0.3   # h-flip + swap paired labels (MedMen<->LatMen, MedOA<->LatOA; MCL flips meaning - handle explicitly)
+  fluid_flag_corrupt_prob: 0.05
+  vertical_flip: false        # never
+eval:
+  metric: macro_auc
+  report_per_label: true
+  save_oof: true
