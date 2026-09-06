@@ -21,4 +21,5 @@ export PYTHONPATH="${PYTHONPATH:-}:$(pwd)"
 
 python scripts/build_cache.py --shard "$SLURM_ARRAY_TASK_ID" --num-shards 20 \
     --raw "$RSNA_ROOT/data/raw" --out "$RSNA_ROOT/data/cache" \
+    --manifest-out "$RSNA_ROOT/artifacts/cache_manifests" \
     --spacing 0.3 --size 384 --dtype uint8

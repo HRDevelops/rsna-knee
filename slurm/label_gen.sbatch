@@ -20,9 +20,10 @@ export HF_HOME=$RSNA_ROOT/hf_cache
 cd "$RSNA_ROOT/code"
 export PYTHONPATH="${PYTHONPATH:-}:$(pwd)"
 
-# Pre-download the model from the LOGIN NODE before submitting this job — outbound internet
-# from the H100 compute nodes is unconfirmed (see docs/HPC_WORKFLOW.md); this job assumes the
-# model is already cached under $HF_HOME.
+# Confirmed 2026-09-06: H100 compute nodes have internet, so this can download on first run too —
+# but pre-downloading via `huggingface-cli download` avoids burning GPU-allocated time on a
+# multi-GB transfer. Second-opinion model: Meta never released an official Llama-3.3-70B AWQ
+# quant, use the community one: casperhansen/llama-3.3-70b-instruct-awq (612k+ downloads on HF).
 MODEL=${1:-Qwen/Qwen2.5-72B-Instruct-AWQ}
 python scripts/label_reports.py --model "$MODEL" \
     --reports "$RSNA_ROOT/data/raw/train.csv" \
