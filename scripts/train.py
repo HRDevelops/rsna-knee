@@ -266,7 +266,14 @@ def main() -> None:
                 norms = component_grad_norms(model)
                 print(f"  epoch {epoch} batch {n_batches}: loss={loss.item():.4f} "
                       f"grad_norms={ {k: round(v, 4) for k, v in norms.items()} }", file=sys.stderr)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            # Clip backbone and head/slice-agg params SEPARATELY, not with one combined norm.
+            # Diagnostic finding (2026-09-07): backbone grad norm is wildly spiky (1-25+) while
+            # the from-scratch head sits at 0.1-4 — a single global clip_grad_norm_ computes one
+            # scale factor from the combined norm, so a backbone spike forces the SAME aggressive
+            # down-scaling onto the tiny, freshly-initialized head gradients too, intermittently
+            # starving their learning signal. This is very likely the actual collapse mechanism.
+            for group in param_groups:
+                torch.nn.utils.clip_grad_norm_(group["params"], 1.0)
             optimizer.step()
             scheduler.step()
             ema.update(model)
