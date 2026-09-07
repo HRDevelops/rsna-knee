@@ -188,6 +188,12 @@ class RSNAKneeDataset(Dataset):
             )
         else:
             weights = torch.ones(len(TARGET_COLUMNS), dtype=torch.float32)
+        # Stability bundle: floor confidence weight at 0.1 regardless of source, defensively — a
+        # near-zero weight makes that sample's loss contribution near-zero too, which starves
+        # gradient signal for whatever label happened to get a low confidence score. Applied here
+        # (not just upstream in build_labels_v2.py) so it protects every labels_*.parquet this
+        # dataset ever reads, not only the ones built by that specific script.
+        weights = weights.clamp(min=0.1)
         return probs, weights
 
     def __getitem__(self, idx: int) -> dict:

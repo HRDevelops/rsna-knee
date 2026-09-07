@@ -90,6 +90,30 @@ def weighted_bce_loss(logits: torch.Tensor, targets: torch.Tensor, weights: torc
     return (loss * weights).sum() / weights.sum().clamp(min=1e-6)
 
 
+_GRAD_NORM_GROUPS = {
+    "backbone": lambda name: name.startswith("backbone."),
+    "slice_agg": lambda name: name.startswith(("slice_pos_embed.", "slice_cls", "slice_transformer.")),
+    "study_head": lambda name: name.startswith(
+        ("slot_embed.", "slot_transformer.", "target_queries", "target_attn.", "head.")
+    ),
+}
+
+
+def component_grad_norms(model: nn.Module) -> dict[str, float]:
+    """Grad norm per architectural component, computed BEFORE clipping — used to diagnose which
+    part of the from-scratch model (if any) is exploding/vanishing early in training."""
+    sums = {k: 0.0 for k in _GRAD_NORM_GROUPS}
+    for name, p in model.named_parameters():
+        if p.grad is None:
+            continue
+        norm_sq = p.grad.detach().float().norm(2).item() ** 2
+        for group, pred in _GRAD_NORM_GROUPS.items():
+            if pred(name):
+                sums[group] += norm_sq
+                break
+    return {k: v ** 0.5 for k, v in sums.items()}
+
+
 @torch.no_grad()
 def run_inference(model: SlotModel, loader: DataLoader, device: str, autocast_dtype) -> pd.DataFrame:
     model.eval()
@@ -149,17 +173,25 @@ def main() -> None:
     parser.add_argument("--raw", type=Path, default=None, help="data/raw (for gold-58 truth); default $RSNA_ROOT/data/raw")
     parser.add_argument("--cache-manifests", type=Path, default=None)
     parser.add_argument("--max-hours", type=float, default=7.0, help="wall-clock guard, leaves margin under sbatch --time")
+    parser.add_argument("--debug-grad-norms", action="store_true",
+                         help="log per-component grad norms every 10 batches (fold-collapse diagnosis)")
+    parser.add_argument("--seed-override", type=int, default=None,
+                         help="override config seed, for multi-seed stability sweeps")
+    parser.add_argument("--eval-raw-too", action="store_true",
+                         help="also run OOF/gold58 eval with raw (non-EMA) weights, for comparison")
     args = parser.parse_args()
 
     with open(args.config) as f:
         cfg = expand_env(yaml.safe_load(f))
-    set_seed(cfg["seed"])
+    seed = args.seed_override if args.seed_override is not None else cfg["seed"]
+    set_seed(seed)
 
     rsna_root = Path(os.environ.get("RSNA_ROOT", args.out.parent))
     raw_dir = args.raw or (rsna_root / "data" / "raw")
     cache_manifests = args.cache_manifests or (rsna_root / "artifacts" / "cache_manifests")
 
-    exp_dir = args.out / cfg["experiment"] / f"fold{args.fold}"
+    fold_dir_name = f"fold{args.fold}" if args.seed_override is None else f"fold{args.fold}_seed{seed}"
+    exp_dir = args.out / cfg["experiment"] / fold_dir_name
     exp_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy(args.config, exp_dir / "config.yaml")
 
@@ -230,6 +262,10 @@ def main() -> None:
                 loss = weighted_bce_loss(logits, labels, weights) if cfg["train"]["label_confidence_weighting"] \
                     else nn.functional.binary_cross_entropy_with_logits(logits, labels)
             loss.backward()
+            if args.debug_grad_norms and n_batches % 10 == 0:
+                norms = component_grad_norms(model)
+                print(f"  epoch {epoch} batch {n_batches}: loss={loss.item():.4f} "
+                      f"grad_norms={ {k: round(v, 4) for k, v in norms.items()} }", file=sys.stderr)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             scheduler.step()
@@ -254,6 +290,13 @@ def main() -> None:
         if time.time() - t_start > max_seconds:
             print(f"Wall-clock guard triggered after epoch {epoch} — stopping early.", file=sys.stderr)
             break
+
+    if args.eval_raw_too:
+        raw_oof_df = run_inference(model, val_loader, device, autocast_dtype)
+        raw_macro, raw_per_label = macro_auc(raw_oof_df, val_truth)
+        print(f"[raw, non-EMA] OOF macro-AUC fold {args.fold}: {raw_macro:.4f} "
+              f"(EMA masking check: compare against the EMA number below)", file=sys.stderr)
+        raw_oof_df.to_parquet(exp_dir / "oof_raw.parquet", index=False)
 
     # Final eval with EMA weights.
     original_state = ema.apply_to(model)

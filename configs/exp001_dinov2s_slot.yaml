@@ -18,11 +18,11 @@ model:
 train:
   epochs: 25
   batch_size_studies: 8
-  lr: 2.0e-4
+  lr: 1.0e-4              # 2026-09-07 stability bundle: was 2.0e-4, halved after fold-collapse diagnosis
   backbone_lr_mult: 0.1
   weight_decay: 0.05
   scheduler: cosine
-  warmup_epochs: 2
+  warmup_epochs: 5         # was 2 — stability bundle
   precision: bf16
   ema: 0.999
   loss: bce_soft            # soft labels, weighted by labeler confidence

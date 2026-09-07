@@ -14,6 +14,26 @@ import torch
 import torch.nn as nn
 
 NUM_SLOTS = 6
+SMALL_GAIN_STD = 0.02
+
+
+def _small_gain_init_attn(attn: nn.MultiheadAttention, std: float = SMALL_GAIN_STD) -> None:
+    """Re-init an nn.MultiheadAttention's Q/K/V and output projections with a small std, instead
+    of PyTorch's default Xavier-uniform init (which is scaled for a module trained from a
+    well-conditioned start, not for a from-scratch attention block sitting downstream of a
+    pretrained ViT backbone with very different activation statistics)."""
+    if attn.in_proj_weight is not None:
+        nn.init.trunc_normal_(attn.in_proj_weight, std=std)
+    if attn.in_proj_bias is not None:
+        nn.init.zeros_(attn.in_proj_bias)
+    nn.init.trunc_normal_(attn.out_proj.weight, std=std)
+    if attn.out_proj.bias is not None:
+        nn.init.zeros_(attn.out_proj.bias)
+
+
+def _small_gain_init_encoder(encoder: nn.TransformerEncoder, std: float = SMALL_GAIN_STD) -> None:
+    for layer in encoder.layers:
+        _small_gain_init_attn(layer.self_attn, std=std)
 
 
 class SlotModel(nn.Module):
@@ -45,16 +65,24 @@ class SlotModel(nn.Module):
 
         self.slice_pos_embed = nn.Sequential(nn.Linear(1, D), nn.GELU(), nn.Linear(D, D))
         self.slice_cls = nn.Parameter(torch.zeros(1, 1, D))
-        nn.init.trunc_normal_(self.slice_cls, std=0.02)
-        slice_layer = nn.TransformerEncoderLayer(D, slice_heads, dim_feedforward=D * 4, batch_first=True)
+        nn.init.trunc_normal_(self.slice_cls, std=SMALL_GAIN_STD)
+        # norm_first=True (pre-norm): stability bundle item — from-scratch post-norm transformer
+        # blocks sitting downstream of a pretrained ViT are prone to activation blow-up early in
+        # training; pre-norm keeps the residual stream well-behaved from step 0.
+        slice_layer = nn.TransformerEncoderLayer(D, slice_heads, dim_feedforward=D * 4,
+                                                  batch_first=True, norm_first=True)
         self.slice_transformer = nn.TransformerEncoder(slice_layer, slice_layers)
+        _small_gain_init_encoder(self.slice_transformer)
 
         self.slot_embed = nn.Embedding(NUM_SLOTS, D)
-        slot_layer = nn.TransformerEncoderLayer(D, slot_heads, dim_feedforward=D * 4, batch_first=True)
+        slot_layer = nn.TransformerEncoderLayer(D, slot_heads, dim_feedforward=D * 4,
+                                                 batch_first=True, norm_first=True)
         self.slot_transformer = nn.TransformerEncoder(slot_layer, slot_layers)
+        _small_gain_init_encoder(self.slot_transformer)
 
-        self.target_queries = nn.Parameter(torch.randn(num_targets, D) * 0.02)
+        self.target_queries = nn.Parameter(torch.randn(num_targets, D) * SMALL_GAIN_STD)
         self.target_attn = nn.MultiheadAttention(D, slot_heads, batch_first=True)
+        _small_gain_init_attn(self.target_attn)
         self.head = nn.Linear(D, 1)
 
     def encode_series(self, volumes: torch.Tensor, mask: torch.Tensor, chunk_size: int = 128) -> torch.Tensor:
