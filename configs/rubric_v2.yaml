@@ -228,19 +228,21 @@ label_rubrics:
 # found literally nothing to say about it, distinct from an explicit "no synovitis" statement,
 # which the LLM would normally still leave silent-shaped under this schema, so this conditional
 # prior applies to the whole not-mentioned-at-all bucket by design, not just true silence).
+# 2026-09-07 REVERTED (strategy review, part B): the effusion-tiered version below fired on
+# 80.6% of all 4407 studies (far more than the handful of cases that motivated it) and pushed
+# Synovitis's predicted positive rate to 0.62 against gold's 0.47 — made gold-58 AUC WORSE
+# (0.657->0.634), not better. Reverted to a single flat prior: silent-on-synovitis studies get
+# 0.35 (negative-leaning, matching the "on the fence = negative" rule) regardless of effusion
+# status, confidence_weight 0.1. The mild->negative Synovitis few-shot example above is KEPT —
+# only this conditional-prior mechanism was walked back.
 conditional_priors:
   SYNOVITIS:
     based_on_target: EFFUSION
-    tiers:  # evaluated top to bottom, first match wins, based on the Effusion target's probability
-      - effusion_probability_gte: 0.35
-        prior_probability: 0.55
-        label: "moderate/large effusion"
-      - effusion_probability_gte: 0.15
-        prior_probability: 0.35
-        label: "small/trace effusion"
+    tiers:  # single flat tier — effusion_probability_gte: 0.0 always matches, so every silent
+            # case gets the same prior regardless of effusion status
       - effusion_probability_gte: 0.0
-        prior_probability: 0.15
-        label: "no effusion"
+        prior_probability: 0.35
+        label: "flat prior (effusion-tiering reverted)"
     confidence_weight: 0.1
     source_tag: "conditional_prior"
 

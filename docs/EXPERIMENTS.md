@@ -128,3 +128,23 @@ AUC, gold-58 AUC, and public LB only when actually probed (budget ≤2 probes/we
   (42, 123) x 5 folds = 10 runs, ~10 epochs each — 10/10 escaped the plateau**, all showing
   smooth, near-identical, monotonically decreasing loss curves (0.56->0.47) with no sign of
   collapse. Full 25-epoch exp002 training unblocked. See `slurm/acceptance_sweep.sbatch`.
+- 2026-09-07: **Label engine finalized — labels_v2_final.parquet.** Part B of the strategy review:
+  (1) reverted the Synovitis effusion-tiered conditional prior to a flat 0.35/confidence 0.1
+  (`scripts/patch_synovitis_prior_revert.py`, patched the existing Qwen v2 parquet in place — no
+  LLM rerun, the prior was applied post-hoc in code) since the tiering made gold-58 AUC worse, not
+  better; kept the mild->negative Synovitis few-shot and the Contusion/Fracture hierarchy rule,
+  both baked into the v2 prompt and already reflected in the existing Qwen/Llama outputs.
+  (2) `scripts/build_labels_v2_final.py`: per-label choice among {qwen_only, llama_only, 50/50
+  blend} selected by STRICT leave-one-out AUC on gold-58 (each held-out study's prediction comes
+  from calibrator(s) refit on the other 57 only — genuinely out-of-sample, not a post-hoc
+  rationalization). Blend wins 8/12 labels (often beating both individual models outright, e.g.
+  MCL blend LOO-AUC 0.943 vs Qwen 0.807 / Llama 0.839); Llama-only wins Synovitis (0.711 vs
+  Qwen's 0.341 — worse than random) and Baker's (0.862); Qwen-only wins Lateral Meniscus (0.812)
+  and Fracture (0.747). **Macro LOO AUC of the chosen-per-label strategy: 0.823** — a properly
+  honest number since it's strict LOO throughout, expected to read lower than the earlier
+  non-LOO single-model AUCs (Qwen v1 0.851, Qwen v2 0.846, Llama 0.870), which had a small
+  optimism bias from fitting and evaluating calibration on the same 58 points. Full table:
+  `docs/label_blend_v2_final.md`. No rubric v3, no new labeler runs, per instruction. Backlog:
+  guided/constrained JSON decoding (vLLM supports it via the outlines backend) would more
+  robustly fix the residual ~1% parse-failure rate than further prompt tuning — only worth
+  pursuing if/when we rerun either LLM.
