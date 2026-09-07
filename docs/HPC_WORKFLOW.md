@@ -132,6 +132,43 @@ With `~/.ssh/config` already containing the `nu-hpc` host alias:
 Wrap these as `scripts/push.sh`, `scripts/run.sh <config>`, `scripts/pull.sh <exp>` so the loop
 is one command each. Telegram bot pings on job end (hook `sbatch --wrap` or trap in script).
 
+## 3.5. KNOWN CLUSTER BUG — GPU isolation between co-located jobs (found 2026-09-07)
+
+**Confirmed via direct probe: when two or more jobs (ours or another tenant's) land on the same
+H100 node, ALL of them report `CUDA_VISIBLE_DEVICES=0`** regardless of which GRES index SLURM
+logically assigned each one. A 4-task array job requesting `--gres=gpu:1` each, landing together
+on one node, printed `CUDA_VISIBLE_DEVICES=0` for every single task — the cgroup/gres device
+isolation that's supposed to give each job its own distinct physical GPU is not working on this
+cluster. Small operations (a 1000x1000 tensor alloc) "succeed" for everyone since GPU 0 has
+capacity to spare, masking the bug at trivial scale.
+
+**Symptom in real training jobs:** co-located jobs eventually collide once combined GPU memory
+pressure gets high enough — anywhere from immediately (exit code `0:53`, no application log at
+all) to ~54 minutes in (exit code `120:0`, training runs fine until it doesn't, no Python
+exception in the log — the process is killed externally). We hit this repeatedly on 2026-09-07
+running exp002's 5-fold array job: 4 co-located tasks died together at ~54min; retries on other
+nodes (including previously-unused ones) died again within seconds whenever co-located, on
+every node we tried (g003, g004, g005) — this is not a single bad node, it's cluster-wide.
+
+**This can also be triggered by OTHER users' jobs sharing a node**, not just our own — a job we
+submitted to a node with zero other jobs of ours still failed instantly, most likely because
+another tenant's job was already there.
+
+**Mitigation (imperfect, no full fix available from user-space):**
+- `--exclusive` (reserve the whole node) avoids the bug but is usually blocked by this account's
+  QOS GRES-per-user cap once a few jobs are already running — don't rely on it for a 5-job sweep.
+- `--nodelist=<node>` to manually spread jobs across distinct nodes helps but is NOT sufficient
+  on its own, since another tenant can still land on "your" node afterward.
+- The only fully reliable workaround is running one GPU job at a time (no concurrent submissions
+  from us at all) — this sacrifices the fold-parallel-array-job speed advantage from §4 below, but
+  is what actually avoids the collision reliably.
+- Checkpointing (every epoch, `--resume auto`) makes retries cheap regardless — a killed job just
+  needs resubmitting, no lost work beyond the current epoch.
+- **This needs cluster-admin attention** (`gres.conf`/`cgroup.conf` likely missing
+  `ConstrainDevices=yes` or an equivalent device cgroup setting) — flag it to HPC support with the
+  probe evidence above (`CUDA_VISIBLE_DEVICES=0` for every co-located task) if it keeps costing
+  wall-clock time.
+
 ## 4. SLURM patterns for this project
 
 - **Fold-parallel arrays** beat multi-GPU: `--array=0-4`, one GPU per fold.
