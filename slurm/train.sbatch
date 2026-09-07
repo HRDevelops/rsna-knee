@@ -20,6 +20,13 @@ source /shared/home/$USER/rsna-knee/venv/bin/activate
 export RSNA_ROOT=${RSNA_ROOT:-/shared/home/$USER/rsna-knee}
 cd "$RSNA_ROOT/code"
 export PYTHONPATH="${PYTHONPATH:-}:$(pwd)"
+# 2026-09-07: exp002 jobs were dying ~54min-2h in with no Python exception (external kill),
+# including a job running with no co-located jobs of ours at all — points to CUDA memory
+# fragmentation building up from gradient checkpointing combined with our variable-length
+# per-batch backbone calls (valid-slot count varies per sample), not just the cluster's GPU
+# co-location bug (documented in docs/HPC_WORKFLOW.md §3.5). This is PyTorch's own documented
+# mitigation for exactly this "reserved but unallocated memory" growth pattern.
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 CONFIG=${1:-configs/exp001_dinov2s_slot.yaml}
 python scripts/train.py --config "$CONFIG" --fold "$SLURM_ARRAY_TASK_ID" \

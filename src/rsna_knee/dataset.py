@@ -53,6 +53,17 @@ def _nearest_patch_multiple(size: int, patch: int = _DINOV2_PATCH) -> int:
     return max(patch, round(size / patch) * patch)
 
 
+def _patch_size_for_backbone(backbone_name: str) -> int:
+    """timm ViT backbone names encode patch size as `patchNN` (e.g. vit_small_patch14_dinov2,
+    vit_small_patch16_dinov3) — parse it instead of hardcoding, since a hardcoded 14 silently
+    produces an out_size not divisible by a patch16 backbone's patch size (AssertionError deep in
+    timm's patch_embed, found 2026-09-08 when exp004/DINOv3-S crashed on this)."""
+    for part in backbone_name.split("_"):
+        if part.startswith("patch") and part[5:].isdigit():
+            return int(part[5:])
+    return _DINOV2_PATCH
+
+
 def load_cache_manifest(manifest_dir: Path) -> pd.DataFrame:
     files = sorted(glob.glob(str(manifest_dir / "*.parquet")))
     if not files:
@@ -110,7 +121,8 @@ class RSNAKneeDataset(Dataset):
         self.split = split
         self.is_train = split == "train"
         self.T = cfg["data"]["slices_per_series"]
-        self.out_size = _nearest_patch_multiple(cfg["data"]["image_size"])
+        patch = _patch_size_for_backbone(cfg["model"]["backbone"])
+        self.out_size = _nearest_patch_multiple(cfg["data"]["image_size"], patch)
         aug = cfg.get("aug", {})
         self.aug_cfg = aug
 

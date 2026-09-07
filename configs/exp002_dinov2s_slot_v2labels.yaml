@@ -1,0 +1,46 @@
+# exp002: first real training run — labels_v2_final (Platt-calibrated, per-label best-of
+# {Qwen-only, Llama-only, blend} strategy), stratified folds, stability bundle from exp001's
+# fold-collapse fix (per-group grad clipping, pre-norm, small-gain init, warmup 5, lr 1e-4).
+# Per-series bilateral flipping is architectural (src/rsna_knee/dataset.py resolve_side), active
+# for every run regardless of config.
+experiment: exp002_dinov2s_slot_v2labels
+seed: 42
+data:
+  cache_dir: ${RSNA_ROOT}/data/cache
+  labels: ${RSNA_ROOT}/artifacts/labels/labels_v2_final.parquet
+  folds: ${RSNA_ROOT}/artifacts/folds.parquet   # rebuilt 2026-09-07, stratified on labels_v2_final
+  gold_reference: ${RSNA_ROOT}/artifacts/gold58.parquet   # unused — gold truth loaded directly from data/raw/train.csv
+  slices_per_series: 24
+  image_size: 384
+  slots: [Sagittal_FS, Sagittal_nonFS, Coronal_FS, Coronal_nonFS, Axial_FS, Axial_nonFS]
+  laterality_normalize: true
+model:
+  backbone: vit_small_patch14_dinov2.lvd142m   # timm
+  slice_agg: transformer      # 2 layers, 4 heads, pos-enc by normalized slice index, norm_first, small-gain init
+  study_head: cross_slot_transformer   # 2 layers + per-target attention pooling, norm_first, small-gain init
+  num_targets: 12
+train:
+  epochs: 25
+  batch_size_studies: 8
+  lr: 1.0e-4              # stability bundle
+  backbone_lr_mult: 0.1
+  weight_decay: 0.05
+  scheduler: cosine
+  warmup_epochs: 5         # stability bundle
+  precision: bf16
+  ema: 0.999
+  loss: bce_soft            # soft labels, weighted by labeler confidence
+  label_confidence_weighting: true
+aug:
+  rotate_deg: 10
+  scale: 0.1
+  translate: 0.05
+  intensity_jitter: 0.1
+  coarse_dropout: true
+  laterality_swap_prob: 0.3   # h-flip + swap paired labels (MedMen<->LatMen, MedOA<->LatOA; MCL flips meaning - handle explicitly)
+  fluid_flag_corrupt_prob: 0.05
+  vertical_flip: false        # never
+eval:
+  metric: macro_auc
+  report_per_label: true
+  save_oof: true

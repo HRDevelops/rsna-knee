@@ -16,6 +16,7 @@ import copy
 import os
 import random
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -88,6 +89,39 @@ def build_scheduler(optimizer, warmup_epochs: int, total_epochs: int, steps_per_
 def weighted_bce_loss(logits: torch.Tensor, targets: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
     loss = nn.functional.binary_cross_entropy_with_logits(logits, targets, reduction="none")
     return (loss * weights).sum() / weights.sum().clamp(min=1e-6)
+
+
+def quota_headroom_gb(min_gb: float = 15.0) -> tuple[float | None, bool]:
+    """BeeGFS quota headroom in GB, or (None, True) if the check itself fails — a broken quota
+    probe must never block training. See docs/EXPERIMENTS.md 2026-09-08: the shared 400GiB quota
+    across ALL of the user's HPC projects (not just this one) caused a real mid-training push
+    failure once; this guard is the checkpoint-write-side backstop for the same risk."""
+    try:
+        out = subprocess.run(
+            ["beegfs-ctl", "--getquota", "--uid", str(os.getuid()), "--csv"],
+            capture_output=True, text=True, timeout=20, check=True,
+        ).stdout
+        # Output has a banner line + blank line + CSV header + one data row — the data row is
+        # always last, so anchor on that rather than trying to filter out the banner text.
+        data_line = [l for l in out.strip().splitlines() if l][-1]
+        _, _, used, hard = data_line.split(",")[:4]
+        headroom_gb = (float(hard) - float(used)) / 1e9
+        return headroom_gb, headroom_gb >= min_gb
+    except Exception as e:
+        print(f"quota check failed ({e}); proceeding without the guard", file=sys.stderr)
+        return None, True
+
+
+def safe_torch_save(state: dict, path: Path, min_gb: float = 15.0) -> None:
+    """Checkpoint write guarded by quota headroom — logs loudly and SKIPS the write instead of
+    crashing the run when headroom is tight (CLAUDE.md §11 resumability: a skipped checkpoint just
+    means resume falls back to the previous one, whereas a mid-write ENOSPC can corrupt it)."""
+    headroom_gb, ok = quota_headroom_gb(min_gb)
+    if not ok:
+        print(f"QUOTA GUARD: headroom {headroom_gb:.1f}GB < {min_gb}GB floor — "
+              f"SKIPPING checkpoint write to {path}", file=sys.stderr)
+        return
+    torch.save(state, path)
 
 
 _GRAD_NORM_GROUPS = {
@@ -284,15 +318,18 @@ def main() -> None:
             if time.time() - t_start > max_seconds:
                 print(f"Wall-clock guard triggered mid-epoch {epoch} — checkpointing and exiting.",
                       file=sys.stderr)
-                torch.save({"model": model.state_dict(), "optimizer": optimizer.state_dict(),
-                            "scheduler": scheduler.state_dict(), "ema": ema.shadow, "epoch": epoch - 1},
-                           ckpt_path)
+                safe_torch_save({"model": model.state_dict(), "optimizer": optimizer.state_dict(),
+                                  "scheduler": scheduler.state_dict(), "ema": ema.shadow, "epoch": epoch - 1},
+                                 ckpt_path)
                 return
 
         print(f"epoch {epoch}: train_loss={epoch_loss / max(n_batches, 1):.4f}", file=sys.stderr)
 
-        torch.save({"model": model.state_dict(), "optimizer": optimizer.state_dict(),
-                    "scheduler": scheduler.state_dict(), "ema": ema.shadow, "epoch": epoch}, ckpt_path)
+        # "last" checkpoint only — this is the sole checkpoint file per fold (overwritten every
+        # epoch, not accumulated), so there is no per-epoch retention to prune. "best" (lean,
+        # resume-state-free) is written once below, after the single end-of-training eval.
+        safe_torch_save({"model": model.state_dict(), "optimizer": optimizer.state_dict(),
+                          "scheduler": scheduler.state_dict(), "ema": ema.shadow, "epoch": epoch}, ckpt_path)
 
         if time.time() - t_start > max_seconds:
             print(f"Wall-clock guard triggered after epoch {epoch} — stopping early.", file=sys.stderr)
@@ -323,6 +360,14 @@ def main() -> None:
     print(f"Gold-58 tripwire macro-AUC: {gold_macro:.4f}", file=sys.stderr)
     for k, v in gold_per_label.items():
         print(f"  {k}: {v:.4f}" if not np.isnan(v) else f"  {k}: n/a", file=sys.stderr)
+
+    # Lean "best" weights (model + EMA shadow only, no optimizer/scheduler state) — a fraction of
+    # checkpoint.pt's size, and what notebooks/submit-*.ipynb should load (CLAUDE.md §9), not the
+    # full resume checkpoint. Written once here since eval currently only runs at end of training;
+    # if per-epoch validation is added later, gate this write on val_macro improving instead.
+    safe_torch_save({"model": model.state_dict(), "ema": ema.shadow, "epoch": epoch,
+                      "val_macro_auc": val_macro, "gold58_macro_auc": gold_macro},
+                     exp_dir / "best.pt")
 
     ema.restore(model, original_state)
 

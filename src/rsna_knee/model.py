@@ -45,14 +45,18 @@ class SlotModel(nn.Module):
         slice_heads: int = 4,
         slot_layers: int = 2,
         slot_heads: int = 4,
+        pretrained: bool = True,
     ):
         super().__init__()
         # dynamic_img_size=True: DINOv2 timm configs default to a fixed 518x518 img_size and
         # assert on it otherwise. Our cache is 384px (resized to the nearest patch-14 multiple,
         # see dataset._nearest_patch_multiple) — this interpolates the pretrained position
         # embeddings to whatever size we actually feed it instead of hardcoding a resize to 518.
+        # pretrained=False at inference time (Kaggle notebooks, internet OFF): we load our own
+        # fine-tuned state_dict immediately after construction anyway, so the ImageNet/DINOv2 hub
+        # download `pretrained=True` would trigger is both unreachable and unnecessary there.
         self.backbone = timm.create_model(
-            backbone_name, pretrained=True, num_classes=0, in_chans=3, dynamic_img_size=True
+            backbone_name, pretrained=pretrained, num_classes=0, in_chans=3, dynamic_img_size=True
         )
         # Chunking the backbone calls (see encode_series) does NOT reduce training memory on its
         # own — autograd keeps every chunk's activations alive for backward regardless of how the
