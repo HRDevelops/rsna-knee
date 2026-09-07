@@ -105,3 +105,26 @@ AUC, gold-58 AUC, and public LB only when actually probed (budget ≤2 probes/we
   (resumability by design skipped the other 4302 already-good studies). **Lesson: a hard
   parse-or-discard-everything policy is expensive when failures cluster around token-budget
   truncation — worth a partial-JSON salvage path if this recurs at scale in later rounds.**
+- 2026-09-07: **exp001 fold-collapse root cause found and fixed.** 3/5 folds (0,1,4) trained under
+  the original config produced near-constant OOF predictions (std 0.005-0.05 per label) vs the
+  2 healthy folds' real per-study variation (std 0.07-0.28), with nearly identical per-label means
+  across all 5 — confirmed via `--eval-raw-too`/OOF-std check as genuine optimization collapse,
+  not a data issue. Ruled out confidence-weighting (labels_v1.parquet has no confidence_weight
+  columns, so weights were uniformly 1.0). Instrumented with `--debug-grad-norms`
+  (scripts/train.py): backbone grad norm was wildly spiky (1-25+, no stable range) while the
+  from-scratch slice_agg/study_head sat at 0.1-4 (10-50x smaller). Root cause: the single global
+  `clip_grad_norm_(model.parameters(), 1.0)` computes ONE scale factor from the combined norm, so
+  a backbone spike forces the same aggressive down-scaling onto the tiny, freshly-initialized
+  head gradients too — intermittently starving their learning signal. **The fix that mattered
+  most, with the clearest causal evidence: clipping backbone and head/slice-agg params
+  SEPARATELY** (each to max_norm=1.0). Applied together with a broader stability bundle
+  (norm_first=True pre-norm on both from-scratch transformer stacks, small-gain std=0.02 init on
+  all from-scratch attention Q/K/V/out projections, warmup_epochs 2->5, lr 2.0e-4->1.0e-4,
+  confidence-weight floor 0.1) since these are standard practice for training a from-scratch head
+  downstream of a pretrained backbone and cheap to include — **not individually ablated**, so
+  credit isn't cleanly separable between them, but the grad-norm mechanism directly explains the
+  per-group-clipping fix in a way the diagnostic log makes hard to dispute; the others are
+  reasonable insurance, not separately confirmed as load-bearing. **Acceptance test: 2 seeds
+  (42, 123) x 5 folds = 10 runs, ~10 epochs each — 10/10 escaped the plateau**, all showing
+  smooth, near-identical, monotonically decreasing loss curves (0.56->0.47) with no sign of
+  collapse. Full 25-epoch exp002 training unblocked. See `slurm/acceptance_sweep.sbatch`.
