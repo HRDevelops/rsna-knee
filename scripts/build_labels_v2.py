@@ -48,7 +48,13 @@ def load_gold(gold_csv: Path) -> pd.DataFrame:
 
 
 def fit_platt(raw: np.ndarray, gold_binary: np.ndarray) -> LogisticRegression:
-    clf = LogisticRegression()
+    # sklearn's default L2 regularization (C=1.0) is inappropriate for classic 1D Platt scaling —
+    # confirmed empirically: with the default, MCL's fitted decision boundary required a raw
+    # probability of 1.09 (impossible, max is 1.0) to cross calibrated 0.5, so NOT ONE of the 4407
+    # studies ever landed positive for MCL/Lateral OA/Contusion after calibration, regardless of
+    # how confident the LLM was. Platt scaling is meant to be an (effectively) unregularized 1D
+    # logistic fit; C=1e6 approximates that while keeping the same well-tested sklearn solver.
+    clf = LogisticRegression(C=1e6)
     clf.fit(raw.reshape(-1, 1), gold_binary)
     return clf
 

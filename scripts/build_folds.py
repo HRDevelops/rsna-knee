@@ -76,8 +76,21 @@ def assign_folds_stratified(clusters: pd.DataFrame, labels_df: pd.DataFrame, see
 
     cluster_label_sums = merged.groupby("report_cluster_id")[TARGET_COLUMNS].sum()
     cluster_sizes = merged.groupby("report_cluster_id").size()
-    cluster_rarity = (cluster_label_sums * inv_freq).sum(axis=1)
-    order = cluster_rarity.sort_values(ascending=False).index.tolist()
+    # Process LARGEST clusters first (as in assign_folds_group_only's proven LPT approach), not
+    # rarest-first. A single large cluster (e.g. the 209-study site-template) MUST land whole in
+    # one fold; if it's processed last, after many small clusters have already filled folds
+    # unevenly, that one placement can blow out fold-size balance with no way to correct it
+    # afterward (confirmed empirically: rarity-first ordering produced only 3 populated folds out
+    # of 5, sizes 1100/1182/2067). Rarity (inv_freq) still matters for WHICH fold a cluster lands
+    # in — it weights the label-imbalance term below so getting rare-label counts (MCL, Lateral OA,
+    # Baker's) right across folds matters more than getting common-label counts exactly right.
+    order = cluster_sizes.sort_values(ascending=False).index.tolist()
+    inv_freq_arr = inv_freq[TARGET_COLUMNS].to_numpy()
+    # Scale so the label term and the size term start out comparable in magnitude (both roughly
+    # O(size_target) once summed) — otherwise one term drowns out the other regardless of the
+    # structural fix below.
+    size_target = len(merged) / N_FOLDS
+    label_weight = size_target / max((cluster_label_sums.sum().to_numpy() * inv_freq_arr).sum(), 1e-6)
 
     fold_label_counts = np.zeros((N_FOLDS, len(TARGET_COLUMNS)))
     fold_sizes = np.zeros(N_FOLDS)
@@ -90,13 +103,13 @@ def assign_folds_stratified(clusters: pd.DataFrame, labels_df: pd.DataFrame, see
         for f in range(N_FOLDS):
             trial_counts = fold_label_counts[f] + c_labels
             trial_size = fold_sizes[f] + c_size
-            # score = how far this fold's label rates would drift from 1/N_FOLDS ideal, plus a
-            # size-balance term; lower is better.
-            total_labels_so_far = fold_label_counts.sum(axis=0) + c_labels
-            ideal = total_labels_so_far.sum() / N_FOLDS if total_labels_so_far.sum() > 0 else 0
-            label_imbalance = np.abs(trial_counts - (cluster_label_sums.sum().to_numpy() / N_FOLDS)).sum()
-            size_imbalance = abs(trial_size - (len(merged) / N_FOLDS))
-            score = label_imbalance + 0.1 * size_imbalance
+            # Minimize the RESULTING load, not distance from an absolute target. Distance-from-
+            # target is a trap here: early on every fold is far below target, so adding to an
+            # already-larger fold looks "better" (closer to target) than growing an empty one —
+            # confirmed empirically, it collapsed 5 folds down to 3. Minimizing resulting size
+            # directly reproduces proper LPT bin-packing (always favors the currently smallest
+            # fold), with the rarity-weighted label term as a secondary nudge on TOP of that.
+            score = trial_size + label_weight * (trial_counts * inv_freq_arr).sum()
             if best_score is None or score < best_score:
                 best_score, best_fold = score, f
         cluster_to_fold[cluster_id] = best_fold
