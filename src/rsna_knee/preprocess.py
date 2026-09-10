@@ -37,24 +37,22 @@ def slice_normal(iop: list[float]) -> np.ndarray:
     return np.cross(row, col)
 
 
-def load_and_order_series(series_dir: Path) -> tuple[list, dict]:
-    """Reads every .dcm in series_dir, orders by ImagePositionPatient projected onto the slice
-    normal (not InstanceNumber — see scripts/build_cache.py module docstring for why)."""
-    dcm_files = sorted(Path(series_dir).glob("*.dcm"))
-    datasets = [pydicom.dcmread(str(f), force=True) for f in dcm_files]
-    if not datasets:
-        raise ValueError("no .dcm files in series dir")
-
-    iop = datasets[0].get("ImageOrientationPatient")
-    instance_numbers = [int(ds.get("InstanceNumber", i)) for i, ds in enumerate(datasets)]
+def _order_from_headers(headers: list) -> tuple[np.ndarray, dict]:
+    """Pure ordering computation, shared by the full-read (load_and_order_series) and
+    header-only (decode_series_to_uint8_fast) paths — headers just needs ImageOrientationPatient/
+    ImagePositionPatient/InstanceNumber, all present whether or not pixel data was read
+    (stop_before_pixels=True still gives you these). Orders by ImagePositionPatient projected onto
+    the slice normal (not InstanceNumber — see scripts/build_cache.py module docstring for why)."""
+    iop = headers[0].get("ImageOrientationPatient")
+    instance_numbers = [int(ds.get("InstanceNumber", i)) for i, ds in enumerate(headers)]
     if iop is not None:
         normal = slice_normal([float(x) for x in iop])
         projections = [
             float(np.dot(np.array([float(x) for x in ds.get("ImagePositionPatient", [0, 0, i])]), normal))
-            for i, ds in enumerate(datasets)
+            for i, ds in enumerate(headers)
         ]
     else:
-        projections = list(range(len(datasets)))
+        projections = list(range(len(headers)))
 
     ipp_order = np.argsort(projections)
     inst_order = np.argsort(instance_numbers)
@@ -70,15 +68,25 @@ def load_and_order_series(series_dir: Path) -> tuple[list, dict]:
         elif len(gaps) > 0 and np.any(np.abs(gaps) <= 1e-6):
             irregular_spacing = True
 
-    ordered_datasets = [datasets[i] for i in ipp_order]
-    pixel_spacing = ordered_datasets[0].get("PixelSpacing", [1.0, 1.0])
+    pixel_spacing = headers[ipp_order[0]].get("PixelSpacing", [1.0, 1.0])
     meta = {
-        "n_slices": len(ordered_datasets),
+        "n_slices": len(headers),
         "native_spacing": str([float(x) for x in pixel_spacing]),
         "order_mismatch": order_mismatch,
         "irregular_spacing": irregular_spacing,
     }
-    return ordered_datasets, meta
+    return ipp_order, meta
+
+
+def load_and_order_series(series_dir: Path) -> tuple[list, dict]:
+    """Reads every .dcm in series_dir (full read, pixel data included), orders by
+    ImagePositionPatient projected onto the slice normal."""
+    dcm_files = sorted(Path(series_dir).glob("*.dcm"))
+    datasets = [pydicom.dcmread(str(f), force=True) for f in dcm_files]
+    if not datasets:
+        raise ValueError("no .dcm files in series dir")
+    order, meta = _order_from_headers(datasets)
+    return [datasets[i] for i in order], meta
 
 
 def resample_and_crop(ds, target_spacing: float, target_size: int) -> np.ndarray:
@@ -126,5 +134,46 @@ def decode_series_to_uint8(series_dir: Path, target_spacing: float = 0.3,
     volume = np.stack(slices, axis=0)
     volume_uint8 = normalize_uint8(volume)
     ds0 = ordered_datasets[0]
+    meta["tag_laterality"] = str(ds0.get("Laterality", "")) or str(ds0.get("ImageLaterality", ""))
+    return volume_uint8, meta
+
+
+def decode_series_to_uint8_fast(series_dir: Path, T: int, target_spacing: float = 0.3,
+                                 target_size: int = 384) -> tuple[np.ndarray, dict]:
+    """Decode fast path for T-slice consumers (CLAUDE.md §8 efficiency track). Profiled 2026-09-10:
+    decode is ~82% of the efficiency notebook's per-study cost (model inference only ~18%), almost
+    entirely wasted for T=16 against a typical ~30-slice series — decode_series_to_uint8 decodes
+    every slice's pixel data (the expensive JPEG/JPEG2000 decompression) only to have the caller
+    throw away roughly half of them via a post-hoc linspace subsample.
+
+    This reads DICOM headers ONLY (stop_before_pixels=True — no pixel decompression) to determine
+    slice ordering, picks T evenly-spaced slices from the ordered series (the exact same linspace
+    selection infer_core.decode_study_slots normally applies AFTER a full decode), and decodes
+    pixel data only for those T files. Returns [T, target_size, target_size] uint8, already
+    subsampled — NOT [n_slices, ...] like decode_series_to_uint8.
+
+    Deliberate approximation vs. decode_series_to_uint8 / the training cache (scripts/build_cache.py):
+    percentile normalization (normalize_uint8) is computed over just these T slices instead of the
+    full series. Empirically validated before use (EXPERIMENTS.md 2026-09-10: prediction deltas
+    and macro-AUC-vs-labels_v3_candidate compared against the accurate path on the full 1300-study
+    synthetic load-test set). Efficiency-notebook-only — NOT used for the ensemble notebook (T=24
+    of ~30 slices, much smaller waste, and accuracy stakes are higher there) or for cache-building
+    (exact train/inference parity matters more than a one-time decode cost)."""
+    dcm_files = sorted(Path(series_dir).glob("*.dcm"))
+    headers = [pydicom.dcmread(str(f), force=True, stop_before_pixels=True) for f in dcm_files]
+    if not headers:
+        raise ValueError("no .dcm files in series dir")
+    order, meta = _order_from_headers(headers)
+
+    n = len(order)
+    take = np.clip(np.linspace(0, n - 1, T).round().astype(int), 0, n - 1)  # same formula as the
+    # post-hoc subsample in infer_core.decode_study_slots — duplicates possible only if n < T.
+    selected_files = [dcm_files[order[i]] for i in take]
+
+    datasets = [pydicom.dcmread(str(f), force=True) for f in selected_files]
+    slices = [resample_and_crop(ds, target_spacing, target_size) for ds in datasets]
+    volume = np.stack(slices, axis=0)
+    volume_uint8 = normalize_uint8(volume)
+    ds0 = datasets[0]
     meta["tag_laterality"] = str(ds0.get("Laterality", "")) or str(ds0.get("ImageLaterality", ""))
     return volume_uint8, meta

@@ -69,9 +69,16 @@ class SlotModel(nn.Module):
         # pretrained=False at inference time (Kaggle notebooks, internet OFF): we load our own
         # fine-tuned state_dict immediately after construction anyway, so the ImageNet/DINOv2 hub
         # download `pretrained=True` would trigger is both unreachable and unnecessary there.
-        self.backbone = timm.create_model(
-            backbone_name, pretrained=pretrained, num_classes=0, in_chans=3, dynamic_img_size=True
-        )
+        try:
+            self.backbone = timm.create_model(
+                backbone_name, pretrained=pretrained, num_classes=0, in_chans=3, dynamic_img_size=True
+            )
+        except TypeError:
+            # dynamic_img_size interpolates a ViT's position embedding to a non-native input size
+            # and only exists on that family. Conv backbones (e.g. exp009's ConvNeXt-V2) have no
+            # position embedding, take any input size divisible by their stride natively, and
+            # reject the kwarg outright (found 2026-09-10 adding the first non-ViT 2D backbone).
+            self.backbone = timm.create_model(backbone_name, pretrained=pretrained, num_classes=0, in_chans=3)
         # Chunking the backbone calls (see encode_series) does NOT reduce training memory on its
         # own — autograd keeps every chunk's activations alive for backward regardless of how the
         # forward is split (confirmed by OOM persisting after adding chunking). Gradient

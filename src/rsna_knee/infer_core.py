@@ -44,7 +44,7 @@ from .dataset import (
     LATERALITY_SWAP_PAIRS, NUM_SLOTS, SLOT_NAMES, TARGET_COLUMNS, _patch_size_for_backbone,
     slot_index,
 )
-from .preprocess import decode_series_to_uint8
+from .preprocess import decode_series_to_uint8, decode_series_to_uint8_fast
 
 _DINOV2_PATCH = 14
 
@@ -120,13 +120,35 @@ def decode_one_for_pool(task: tuple) -> tuple:
         return study_uid, {}, [], f"{type(e).__name__}: {e}"
 
 
+def decode_one_for_pool_fast(task: tuple) -> tuple:
+    """Same picklable-worker contract as decode_one_for_pool, but calls decode_study_slots with
+    fast=True (preprocess.decode_series_to_uint8_fast — header-only ordering pass + pixel-decode
+    of only the T slices actually used). See decode_series_to_uint8_fast's docstring for the
+    validated approximation this makes and why it's efficiency-notebook-only.
+    task: (study_uid, study_series, series_root_str, T, out_size)."""
+    study_uid, study_series, series_root_str, T, out_size = task
+    try:
+        slots, tag_sides = decode_study_slots(
+            study_uid, study_series, Path(series_root_str) / study_uid, T, out_size, fast=True
+        )
+        return study_uid, slots, tag_sides, None
+    except Exception as e:  # noqa: BLE001 - report the failure, don't crash the pool
+        return study_uid, {}, [], f"{type(e).__name__}: {e}"
+
+
 def decode_study_slots(
     study_uid: str, series_rows: list[dict], series_root: Path, T: int, out_size: int,
+    fast: bool = False,
 ) -> tuple[dict[int, torch.Tensor], list[str]]:
     """series_rows: list of {"series_uid","Anatomical_Plane","Fluid_Sensitive"} for this study.
     Returns {slot_idx: [T,out_size,out_size] float32 in [0,1]} for slots with a successfully
     decoded series (longest series wins ties, matching training's RSNAKneeDataset.slot_map), plus
-    the raw per-series tag_laterality strings actually decoded (for resolve_study_side)."""
+    the raw per-series tag_laterality strings actually decoded (for resolve_study_side).
+
+    fast=True uses preprocess.decode_series_to_uint8_fast (header-only ordering + T-slice-only
+    pixel decode) instead of the full-series decode — efficiency-notebook-only, see that
+    function's docstring for the validated approximation it makes. The "longest series wins ties"
+    rule below still applies to the TRUE series length (meta["n_slices"], not T) either way."""
     candidates: dict[int, tuple[str, int]] = {}  # slot_idx -> (series_uid, n_slices)
     decoded: dict[str, tuple[np.ndarray, str]] = {}  # series_uid -> (uint8 vol, tag_side)
 
@@ -136,12 +158,18 @@ def decode_study_slots(
             continue
         series_uid = row["series_uid"]
         try:
-            vol, meta = decode_series_to_uint8(series_root / series_uid)
+            if fast:
+                vol, meta = decode_series_to_uint8_fast(series_root / series_uid, T)
+            else:
+                vol, meta = decode_series_to_uint8(series_root / series_uid)
         except Exception as e:  # noqa: BLE001 - one bad series must never kill the study
             print(f"  [WARN] {study_uid}/{series_uid} decode failed: {type(e).__name__}: {e}")
             continue
         decoded[series_uid] = (vol, normalize_tag_side(meta.get("tag_laterality")))
-        n_slices = vol.shape[0]
+        # meta["n_slices"] is the TRUE series length even in fast mode (vol.shape[0] is only T
+        # there) — ties must still break on which series is actually longer, not on how many
+        # slices happened to get decoded from it.
+        n_slices = meta.get("n_slices", vol.shape[0])
         if idx not in candidates or n_slices > candidates[idx][1]:
             candidates[idx] = (series_uid, n_slices)
 

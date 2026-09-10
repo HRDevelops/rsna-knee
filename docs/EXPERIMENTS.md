@@ -647,3 +647,77 @@ AUC, gold-58 AUC, and public LB only when actually probed (budget ≤2 probes/we
   budgets, and both real full-1300 runs finished well inside budget with clean, fully-valid
   output and zero crashes. Actual Kaggle submission still gated on pinning the accelerator and
   clicking probe #1 per earlier decision — this rehearsal only clears the local/HPC readiness bar.
+- 2026-09-10: **Kaggle-hardware pre-push fixes.** The prior rehearsal validated crash-safety and
+  timing, but two of the notebooks' internal decisions were wrong for Kaggle's actual hardware
+  (not H100):
+  1. **Wall-clock budget corrected.** `submit-efficiency.ipynb` was using `BUDGET_SECONDS =
+     45*60` — the CLAUDE.md §8 *performance target*, not a crash-prevention budget — as its
+     actual wall-clock guard, which would have started dropping to label-prior fallbacks at 45min
+     regardless of how much real budget remained. Fixed to the true `8*3600` safety cap, matching
+     `submit-ensemble.ipynb` (already correct) and `rehearse_ensemble.py` (already correct).
+     `rehearse_efficiency.py`'s own `--budget-seconds` default fixed to match.
+  2. **Fold-count selection now formula-driven, not budget-driven.** With a real 8h budget, "does
+     it fit" is true for every rung — so `submit-efficiency.ipynb` cell-6 now picks the fold count
+     that minimizes the CLAUDE.md §4 efficiency-track formula (`Eff = AUC/(0.5-maxAUC) +
+     s/32400`, maxAUC assumed 0.92 pending the real private-LB value) instead. OOF-AUC-by-fold-
+     count comes from the gold-58 subset-averaging deltas already on record (-0.0060/-0.0030/
+     -0.0014/-0.0004/0 for 1-5 folds vs. the accepted 0.8708). Calibration now times decode and
+     model inference SEPARATELY, in-notebook, on whatever GPU Kaggle actually assigns (not an HPC
+     assumption) — decode cost is fold-count-independent, model cost scales with fold count, so
+     conflating them (the old code) would have misprojected every rung except 5-fold anyway.
+     Real run on the synthetic 1300-study set (job 24788, H100): calibration measured decode
+     0.508s/study, model(5-fold) 0.170s/study; formula scores came out **very close across all
+     five rungs** (-2.0373 @ 1-fold through -2.0466 @ 4-fold, -2.0462 @ 5-fold) since decode so
+     thoroughly dominates total runtime that the fold-count-dependent term barely moves the
+     score — 4 folds won by a hair (0.0004) over 5. Expect this pick to be sensitive to
+     measurement noise between runs/hardware; both are effectively equivalent under the formula,
+     which is itself the finding worth recording (fold count barely matters for the EFFICIENCY
+     SCORE once decode dominates wall-clock — the lever that actually matters is decode speed).
+  3. **Decode fast path added and validated** (profiling job 24779, H100): decode is ~82% of the
+     efficiency notebook's per-study cost at T=16 (model inference only ~18%) — a full ~30-slice
+     series gets entirely decoded (the expensive JPEG/JPEG2000 step) only to have roughly half its
+     slices thrown away by the existing post-decode T=16 linspace subsample.
+     `preprocess.decode_series_to_uint8_fast` (+ `infer_core.decode_study_slots(fast=True)` /
+     `decode_one_for_pool_fast`) reads DICOM headers only (`stop_before_pixels=True`, no pixel
+     decompression) to order the series, then decodes pixel data for only the T slices actually
+     used. Fixed `decode_study_slots`'s "longest series wins ties" logic to use `meta["n_slices"]`
+     (the true series length) rather than the decoded volume's slice count, which would otherwise
+     have silently broken in fast mode (every fast-decoded volume has exactly T slices regardless
+     of true series length). One approximation: percentile normalization is computed over the T
+     decoded slices instead of the full series (unlike training/the accurate path) — empirically
+     validated (job 24781, N=100 studies, fold count held at 5 in both): mean abs prediction diff
+     **0.00042** (max 0.0063) vs. the accurate path, macro-AUC-vs-`labels_v3_candidate` delta
+     **-0.00004** (0.97345 vs 0.97341) — both far smaller than the already-accepted fold-count-
+     ladder deltas. Turned on by default (`FAST_DECODE = True`). Real speedup measured at N=100:
+     61s -> 46s wall (~25%); full-1300 run (job 24788, 4-fold chosen by the formula above): 763s
+     total vs. the accurate path's 784s at 5-fold — a smaller net gain than the per-study number
+     suggests, because decode so dominates total cost that neither the fold-count drop nor the
+     fast-decode saving moves the total much on its own; `full1300_efficiency_fast.csv` validated
+     (1300 rows, 0 NaNs, values in [0.0079, 0.9939], 1300 unique study UIDs).
+  4. **Decode workers**: `submit-efficiency.ipynb`'s `os.cpu_count()`-based worker count (already
+     capped at 32) needed no change — the SLURM-specific 192-vs-16 misdetection this cap defends
+     against is a shared-HPC-node artifact; Kaggle containers aren't shared SLURM nodes, so
+     `os.cpu_count()` there should already report correctly (commonly 4 CPUs).
+  Still pending (blocked on the user pinning the accelerator in the Kaggle UI, per instruction —
+  not something to automate around): running both notebooks on Kaggle's 3-sample test to record
+  real per-study cost on the actual accelerator, updating this ledger with those numbers, and
+  handing back for the Submit clicks (ensemble = probe #2, efficiency = probe #3).
+- 2026-09-10: **exp009 launched — ConvNeXt-V2-Base diversity round.** Every accepted ensemble
+  member so far (exp002/3/5/6) is a DINOv2 ViT — exp009 swaps the Stage-A per-series encoder to
+  `convnextv2_base.fcmae_ft_in22k_in1k` (timm), a fully-convolutional backbone with a genuinely
+  different inductive bias, keeping everything else identical to exp006 (labels_v3_candidate,
+  same folds, same slice-attention + cross-slot study head, same training recipe) so any OOF/
+  correlation delta is attributable to the backbone alone. Acceptance bar: OOF >= 0.855 AND
+  correlation with exp006 < 0.90; greedy ensemble re-selection only runs if both hold.
+  `model.py` needed one fix first: `SlotModel` unconditionally passed timm's `dynamic_img_size`
+  kwarg (a ViT-only option that interpolates the position embedding to a non-native input size) —
+  ConvNeXt has no position embedding and rejects the kwarg outright
+  (`TypeError: unexpected keyword argument`), confirmed interactively before touching training
+  code. Fixed with a try/except fallback to plain construction for non-ViT backbones; confirmed
+  ConvNeXt-V2-Base accepts arbitrary input sizes natively (no patch-grid constraint,
+  `_patch_size_for_backbone` already returns 1 for backbone names with no `patchNN` token) and
+  supports `set_grad_checkpointing`. A 6-minute smoke test (fold 0, `--max-hours 0.1`) trained
+  cleanly through part of an epoch with no errors before the wall-clock guard checkpointed and
+  exited as designed — full 5-fold training launched (job 24783, `--max-hours 7.0` each,
+  standard `train.sbatch` array). Result pending; will log OOF, per-label AUC, and the
+  correlation-with-exp006 check once training completes.
