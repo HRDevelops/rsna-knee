@@ -1,0 +1,48 @@
+# exp007: second architecture family (EXECUTION_PLAN Phase 3.4, ensemble diversity, NOT a
+# solo-performance bid) — replaces the 2D DINOv2 ViT + slice-attention encoder with a native 3D
+# ResNet-50 (MONAI, spatial_dims=3) applied to a whole 32x384x384 volume per series at once. Same
+# study head architecture as SlotModel (slot embeddings, cross-slot transformer, per-target
+# attention pooling) via src/rsna_knee/model_3d.py's Slot3DModel — separate implementation, same
+# hyperparameters. Trained on labels_v3_candidate (current best label generation, ACCEPTED via
+# exp005 2026-09-09), same folds.parquet as exp002/3/5/6. Goal: LOW correlation with exp005 at
+# comparable AUC — report per-label OOF correlation alongside AUC, not just AUC on its own.
+experiment: exp007_resnet3d_slot_v3labels
+seed: 42
+data:
+  cache_dir: ${RSNA_ROOT}/data/cache
+  labels: ${RSNA_ROOT}/artifacts/labels/labels_v3_candidate.parquet
+  folds: ${RSNA_ROOT}/artifacts/folds.parquet
+  gold_reference: ${RSNA_ROOT}/artifacts/gold58.parquet   # unused — gold truth loaded directly from data/raw/train.csv
+  slices_per_series: 32   # fixed depth for the 3D volume (up from 24 in the 2D recipe)
+  image_size: 384
+  slots: [Sagittal_FS, Sagittal_nonFS, Coronal_FS, Coronal_nonFS, Axial_FS, Axial_nonFS]
+  laterality_normalize: true
+model:
+  family: resnet3d
+  backbone: monai_resnet50_3d   # documentary only — Slot3DModel doesn't take a backbone name arg
+  num_targets: 12
+train:
+  epochs: 25
+  batch_size_studies: 4   # halved vs the 2D recipe (8) — 3D conv volumes are far more expensive per item
+  lr: 1.0e-4
+  backbone_lr_mult: 0.1
+  weight_decay: 0.05
+  scheduler: cosine
+  warmup_epochs: 5
+  precision: bf16
+  ema: 0.999
+  loss: bce_soft
+  label_confidence_weighting: true
+aug:
+  rotate_deg: 10
+  scale: 0.1
+  translate: 0.05
+  intensity_jitter: 0.1
+  coarse_dropout: true
+  laterality_swap_prob: 0.3
+  fluid_flag_corrupt_prob: 0.05
+  vertical_flip: false
+eval:
+  metric: macro_auc
+  report_per_label: true
+  save_oof: true

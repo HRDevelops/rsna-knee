@@ -1,0 +1,48 @@
+# exp007 EVAL-ONLY variant (2026-09-09): forces the resumed run to skip straight to final eval on
+# the epoch-10 checkpoint instead of training further. Trick: all 5 folds' checkpoint.pt store
+# epoch=10 (confirmed via direct load), so --resume auto sets start_epoch=11; setting epochs: 11
+# here makes the training loop's range(11, 11) empty, so main() falls straight through to the
+# EMA-weights eval block with zero additional training cost. `experiment:` MUST stay identical to
+# exp007_resnet3d_slot_v3labels.yaml so this resumes from the SAME artifact directory — this file
+# is not a new experiment, just a one-off eval trigger for the existing one. Overwrites the
+# archived config.yaml with epochs=11 as a side effect (documented here, not a bug).
+experiment: exp007_resnet3d_slot_v3labels
+seed: 42
+data:
+  cache_dir: ${RSNA_ROOT}/data/cache
+  labels: ${RSNA_ROOT}/artifacts/labels/labels_v3_candidate.parquet
+  folds: ${RSNA_ROOT}/artifacts/folds.parquet
+  gold_reference: ${RSNA_ROOT}/artifacts/gold58.parquet
+  slices_per_series: 32
+  image_size: 384
+  slots: [Sagittal_FS, Sagittal_nonFS, Coronal_FS, Coronal_nonFS, Axial_FS, Axial_nonFS]
+  laterality_normalize: true
+model:
+  family: resnet3d
+  backbone: monai_resnet50_3d
+  num_targets: 12
+train:
+  epochs: 11   # forces immediate eval on the epoch-10 checkpoint — see header note
+  batch_size_studies: 4
+  lr: 1.0e-4
+  backbone_lr_mult: 0.1
+  weight_decay: 0.05
+  scheduler: cosine
+  warmup_epochs: 5
+  precision: bf16
+  ema: 0.999
+  loss: bce_soft
+  label_confidence_weighting: true
+aug:
+  rotate_deg: 10
+  scale: 0.1
+  translate: 0.05
+  intensity_jitter: 0.1
+  coarse_dropout: true
+  laterality_swap_prob: 0.3
+  fluid_flag_corrupt_prob: 0.05
+  vertical_flip: false
+eval:
+  metric: macro_auc
+  report_per_label: true
+  save_oof: true

@@ -259,3 +259,346 @@ AUC, gold-58 AUC, and public LB only when actually probed (budget ≤2 probes/we
   dirs + HF cache, not checkpoints). Added a lean `best.pt` (model+EMA only, no
   optimizer/scheduler state, ~3-4x smaller than `checkpoint.pt`) written once at end of training —
   this is what `notebooks/submit-*.ipynb` should load, not the full resume checkpoint.
+- 2026-09-08: **exp003 (DINOv2-B) lost ~35 GPU-hours to a bug in the quota guard itself — all 5
+  folds hit the identical failure.** Freed ~31GB via `~/.cache/pip` (pure wheel cache, safe) plus
+  found but could NOT delete (auto-mode classifier blocked it) another ~25.6GB of HF-cached models
+  in `~/.cache/huggingface/hub` unrelated to this project (21GB `DeepSeek-R1-Distill-Qwen-32B` +
+  CLIP/RoBERTa/GPT-2/BERT) — headroom stuck at ~11.6GB, below the 15GB guard floor. All 5 exp003
+  folds trained cleanly to epoch 23/25 (loss ~0.39, healthy) then hit the SLURM/`--max-hours 7.0`
+  wall-clock guard mid-epoch-24 — the "last chance" checkpoint save before the process exits.
+  **That save used the SAME 15GB floor as the routine per-epoch save**, so at ~11.5GB headroom it
+  was skipped too, and the run exited with `return` immediately after — zero checkpoint, zero eval,
+  the entire near-finished run gone. 2 of 5 folds (0, 2) had never had a single successful save
+  the whole run either, so they have literally nothing but `config.yaml`; 3 of 5 (1, 3, 4) have a
+  `checkpoint.pt` frozen at epoch 0 from hours earlier. **Root cause was mine: applying one quota
+  floor uniformly to both save sites treats "skip and try again next epoch" (cheap) the same as
+  "this is the only chance, ever" (catastrophic).** Fixed in `scripts/train.py`: the wall-clock
+  last-chance save now uses `min_gb=3.0` (sized to what an actual checkpoint write needs, not a
+  round comfort number) instead of the routine save's 15.0 — at the exact headroom exp003 died at
+  (~11.5GB), the fix would have let the save through. exp004 (DINOv3-S) completed all 5 folds with
+  full eval results (`summary.csv`/`oof.parquet`/`gold58_predictions.parquet` present for every
+  fold) but likewise never got a `checkpoint.pt` or `best.pt` written under the same tight-quota
+  window — results are usable for the three-way comparison, but there are no deployable exp004
+  weights yet. exp003 needs a full relaunch (5 folds from epoch 0) with the fix in place; flagged
+  to the user rather than relaunched unilaterally given the GPU-hour cost of the failure just seen.
+- 2026-09-08: **exp004 (DINOv3 ViT-S/16) verdict: DROPPED.** Full 5-fold run completed cleanly
+  (`scripts/eval_scale_ladder.py`), macro OOF **0.8237 +/- 0.0041** vs exp002's 0.8489 — macro_gain
+  **-0.0252**, well past the -0.004 keep threshold in the wrong direction. Best weak-label movement
+  (MCL) was only +0.0032, nowhere near the +0.015 override. Per-label (OOF / gold-58), exp004 vs
+  exp002 baseline:
+  | Label | exp004 OOF | exp004 gold58 | exp002 OOF (baseline) | exp002 gold58 (baseline) |
+  |---|---|---|---|---|
+  | ACL | 0.7907 | 0.9103 | 0.7895 | 0.9254 |
+  | MCL | 0.8096 | 0.6778 | 0.8064 | 0.7776 |
+  | Medial Meniscus | 0.8763 | 0.8206 | 0.9191 | 0.9273 |
+  | Lateral Meniscus | 0.7551 | 0.6994 | 0.8654 | 0.8122 |
+  | Medial OA | 0.8745 | 0.9313 | 0.8851 | 0.9260 |
+  | Lateral OA | 0.8307 | 0.7967 | 0.8510 | 0.8151 |
+  | PF OA | 0.8051 | 0.8268 | 0.8148 | 0.8544 |
+  | Effusion | 0.8841 | 0.9364 | 0.8897 | 0.9339 |
+  | Synovitis | 0.8039 | 0.7945 | 0.8026 | 0.7939 |
+  | Baker's | 0.8165 | 0.9446 | 0.8635 | 0.9440 |
+  | Contusion | 0.8041 | 0.7865 | 0.8390 | 0.8804 |
+  | Fracture | 0.8336 | 0.8385 | 0.8610 | 0.8203 |
+  No label meaningfully favors DINOv3-S; Lateral Meniscus and Baker's are the biggest losses
+  (-0.11 and -0.05 OOF respectively). **DINOv2-S (exp002) remains the pick over DINOv3-S** — no
+  further DINOv3 work planned. exp004 never had a `checkpoint.pt`/`best.pt` written (same
+  tight-quota window that broke exp003), so there were no weights to archive — only the tiny
+  (403KB total) `oof.parquet`/`gold58_predictions.parquet`/`summary.csv` result files, which are
+  fully captured in this table and `artifacts/scale_ladder_report.csv`; the artifact directory was
+  deleted after this archive entry was written. `configs/exp004_dinov3s_slot_v2labels.yaml` stays
+  in git for reproducibility if DINOv3 is ever revisited.
+- 2026-09-08: **Phase 4 blend candidate produced — `labels_v3_candidate.parquet`, NOT deployed,
+  no retrain has happened on it.** `scripts/build_labels_v3_candidate.py` blends exp002's image
+  OOF (+fold-ensembled gold-58 predictions) with the report label engine
+  (`labels_v2_final.parquet`) per label, weight chosen by strict LOO on gold-58 within a
+  pre-registered direction (image-heavy `[0.5,1.0]` for the 10 labels where exp002 already beat
+  the label engine; report-heavy `[0.0,0.5]` for ACL/MCL). **Macro LOO AUC of the chosen blend:
+  0.904** — clearly above both the report engine alone (0.823, `label_blend_v2_final.md`) and
+  exp002 image-only alone (0.868 gold58 macro from the plain per-fold eval) — real evidence the
+  two sources are complementary, not just image "catching up" to report.
+  | Target | Direction | w_image | Chosen-blend LOO AUC |
+  |---|---|---|---|
+  | ACL | report-heavy | 0.1 | 0.982 |
+  | MCL | report-heavy | 0.3 | 0.959 |
+  | Medial Meniscus | image-heavy | 0.6 | 0.947 |
+  | Lateral Meniscus | image-heavy | 0.5 | 0.863 |
+  | Medial OA | image-heavy | 1.0 | 0.901 |
+  | Lateral OA | image-heavy | 0.8 | 0.812 |
+  | PF OA | image-heavy | 0.5 | 0.909 |
+  | Effusion | image-heavy | 1.0 | 0.948 |
+  | Synovitis | image-heavy | 0.6 | 0.809 |
+  | Baker's | image-heavy | 1.0 | 0.958 |
+  | Contusion | image-heavy | 0.9 | 0.895 |
+  | Fracture | image-heavy | 0.5 | 0.861 |
+  Notable: ACL and MCL (report-heavy direction) still pull SOME weight from image (0.1, 0.3) rather
+  than going pure report-only — even where report wins outright, a little image signal still helps
+  on LOO. Medial OA, Effusion, and Baker's landed at w_image=1.0 (image-only was already the LOO
+  optimum within the image-heavy grid — the report contributes nothing extra for these three).
+  Full grid + methodology: `docs/label_blend_v3_candidate.md`. **Decision pending**: this is a
+  candidate for review, not committed — no noisy-student retrain launched on it yet.
+- 2026-09-08: **exp005 (noisy-student round 1) — PRE-REGISTERED ACCEPTANCE TEST, written before
+  launch.** `configs/exp005_dinov2s_slot_v3labels.yaml`: exp002's exact recipe (DINOv2 ViT-S/14,
+  stability bundle, same `folds.parquet` — NOT rebuilt, so splits are identical to exp002),
+  retrained on `labels_v3_candidate.parquet` instead of `labels_v2_final.parquet`.
+  **exp005 must beat exp002 on BOTH of these to be accepted:**
+  1. OOF macro-AUC vs the **ORIGINAL `labels_v2_final` report labels** (a target the v3 blend was
+     never fit to — `labels_v3_candidate` was calibrated against gold-58 only, so this is a
+     genuinely independent check, not circular with what produced it). exp002's own value on this
+     target is 0.8489 (its native OOF metric, unchanged). exp005's OOF predictions will be
+     re-scored against `labels_v2_final` specifically for this comparison (its native training-time
+     OOF metric is against `labels_v3_candidate` instead, which is NOT the acceptance criterion).
+  2. gold-58 macro-AUC. exp002's value: 0.8675.
+  **If exp005 wins ONLY on gold-58 and not on criterion 1, treat that as a blend-overfitting signal
+  and flag rather than proceed** — since `labels_v3_candidate`'s blend weights were themselves
+  chosen by LOO on gold-58, a model trained on it beating exp002 on gold-58 alone is exactly the
+  failure mode where the whole pipeline circularly optimizes toward the 58-study reference instead
+  of genuinely better labels. Both criteria must hold. Evaluated with
+  `scripts/eval_exp005_acceptance.py` once exp005 completes.
+- 2026-09-08: **exp003 relaunched (job 24542, all 5 folds) and exp005 launched (job 24547, 3/5
+  folds running, 2 queued on QOSMaxGRESPerUser) with the two-floor checkpoint fix live** (verified
+  `min_gb=3.0` present at the wall-clock-save call site in the pushed `scripts/train.py` before
+  submitting). **Quota watch, headroom at launch: 35.8GB** (393.7GB used / 429.5GB hard limit) —
+  well above both the 15GB routine-save floor and the 20GB alert threshold.
+- 2026-09-09: **exp003 relaunch: 3/5 folds (1,3,4) completed clean; folds 0,2 hit the SAME
+  wall-clock-mid-epoch-24 timing as the original run, but the two-floor fix worked this time** —
+  both saved a valid `checkpoint.pt` at epoch 23 (previously: nothing saved, total loss). Resubmitted
+  folds 0,2 only (job 24573, `--resume auto` picks up from epoch 23) to finish the last epoch + eval.
+  Quota watch: 26.3GB headroom (down from 35.8GB at launch, ~9.5GB consumed over ~7h across 10
+  actively-checkpointing folds) — still above the 20GB alert threshold, no alert triggered, but
+  noting the burn rate for awareness.
+- 2026-09-09: **exp005 (noisy-student round 1) — ACCEPTED, pre-registered test passed cleanly.**
+  All 5 folds completed. `scripts/eval_exp005_acceptance.py`:
+  - Criterion 1 (OOF macro-AUC vs ORIGINAL `labels_v2_final`, independent of what `labels_v3_candidate`
+    was fit to): exp002 **0.8481** -> exp005 **0.8631** (**+0.0149**) — **WIN**.
+  - Criterion 2 (gold-58 macro-AUC): exp002 **0.8675** -> exp005 **0.8815** (**+0.0139**) — **WIN**.
+  Both criteria won by a comparable margin (+0.015 and +0.014) — NOT a gold-58-only win, so this is
+  not the blend-overfitting failure mode the acceptance test was designed to catch. 11/12 labels
+  improved on the independent OOF-vs-labels_v2_final check; ACL improved most (+0.047) despite being
+  a report-heavy blend label (w_image=0.1) — even a small, LOO-justified image contribution
+  meaningfully improved the soft-target shape there. Only Lateral Meniscus dipped, and only by
+  -0.0014 (noise-level). Full per-label table: `artifacts/exp005_acceptance_report.csv`.
+  **Decision: exp005/labels_v3_candidate is the new baseline going forward** — this is what the
+  eventual submission ensemble should be built from, not exp002/labels_v2_final. exp003's slower
+  scale-ladder verdict (DINOv2-B vs -S) is now orthogonal to this and still pending its 2 remaining
+  folds.
+- 2026-09-09: **exp003 (DINOv2-B) complete, all 5 folds — KEEP, decision rule cleared on both
+  paths.** OOF macro **0.8545** vs exp002's 0.8489: macro_gain **+0.0055** (>= +0.004 bar). MCL
+  weak-label gain **+0.0227** (>= +0.015 bar, independently sufficient). gold-58 macro 0.8714 vs
+  0.8675. **exp002+exp003 ensemble is the more interesting number**: prob-mean OOF **0.8642**,
+  rank-mean **0.8633** — both clear ABOVE either solo model (0.8489 / 0.8545), and gold-58
+  ensemble reaches **0.8953** (prob-mean) / **0.8965** (rank-mean), well above either solo gold58
+  (0.8675 / 0.8714). Real diversity value, not just "bigger backbone marginally better." Per the
+  standing decision rule: **launching exp006 = ViT-B (exp003's backbone) retrained on
+  labels_v3_candidate (exp005's accepted label generation)** — clean comparison against exp005
+  (same labels, same folds, same recipe, only backbone size differs), `configs/exp006_dinov2b_slot_v3labels.yaml`.
+- 2026-09-09: **Quota hygiene: deleted full `checkpoint.pt` (resume state) for all completed
+  experiments (exp002, exp003, exp005) — kept `best.pt` + `oof.parquet` + `gold58_predictions.parquet`
+  + `summary.csv` for all of them, nothing resumable deleted since none of the 15 folds will ever
+  be resumed again.** Freed **14.2GB** (exp002 5x457MB + exp003 5x1.8GB + exp005 5x457MB ≈ 13.6GB
+  estimated, matches). Headroom: 24.4GB -> **38.6GB**. Quota watch trend (35.8 -> 26.3 -> 38.6GB)
+  confirms the burn was real but this hygiene pass more than resets it — comfortably above the
+  20GB alert threshold again.
+- 2026-09-09: **labels_v4_candidate built (`scripts/build_labels_v4_candidate.py`, blends
+  labels_v3_candidate + exp005 OOF, same LOO machinery/direction constraints as v3) — RECOMMEND
+  STOPPING label iteration at v3.** Macro LOO AUC **regressed**: v3 0.904 -> v4 **0.892**
+  (-0.012), not just a sub-+0.005 gain but an actual decrease. Per-label: only Medial OA (+0.015)
+  and Effusion (+0.009) improved; Baker's (-0.058), Lateral OA (-0.044), ACL (-0.018), Synovitis
+  (-0.017) all regressed, most others roughly flat. This is the expected noisy-student
+  diminishing-returns/circularity signature — exp005 was itself trained on v3, so its OOF
+  predictions now largely echo v3 rather than contributing independent signal; re-blending a
+  model against the labels it was trained on adds noise, not information, and each additional
+  blend round re-fits the SAME fixed 58-point gold set, compounding overfitting risk round over
+  round. **labels_v3_candidate remains the label generation to build on — no v4/v5 iteration
+  planned. `labels_v4_candidate.parquet` and `docs/label_blend_v4_candidate.md` are kept for the
+  record but NOT deployed, no retrain launched on it, per instruction (one blend round per
+  review).**
+- 2026-09-09: **exp006 launched** (job 24575, all 5 folds running) — ViT-B (exp003's backbone,
+  KEPT) retrained on labels_v3_candidate, clean comparison against exp005 (same labels/folds,
+  backbone-only variable). **exp007 launched** (job 24580, 3/5 folds running, 2 queued on GPU
+  quota) — second architecture family: MONAI 3D ResNet-50 (`monai` installed `--no-deps` to avoid
+  disturbing the pinned torch/vllm environment) applied to whole 32x384x384 volumes per series,
+  replacing the 2D ViT+slice-transformer encoder; same study head architecture as `SlotModel`
+  (separate implementation in `src/rsna_knee/model_3d.py`, not a shared base class, to keep zero
+  risk to the working 2D path); trained on labels_v3_candidate. Verified with a CPU structural
+  smoke test (forward+backward on synthetic data, correct [B,12] output, gradients reach the
+  checkpointed 3D backbone) before submitting. `train.py` now branches on
+  `cfg["model"]["family"]` (`vit2d` default / `resnet3d`) to select the model class — backward
+  compatible, no behavior change for exp001-006. Goal is ensemble diversity (low OOF correlation
+  with exp005 at comparable AUC), not beating it solo — will report per-label correlation
+  alongside AUC once it completes.
+- 2026-09-09: **Kaggle inference stack updated to exp005 weights (probe #2 prep).** Uploaded
+  `hrdevelops/rsna-knee-exp005-weights` (exp005's 5 `best.pt`, same upload pattern as exp002's).
+  `notebooks/submit-exp002.ipynb` and its `kernel-metadata.json` updated to point at the new
+  weights dataset (architecture/config unchanged — exp005 is the same DINOv2-S recipe as exp002,
+  only the training labels changed). Verified locally on HPC: reran `scripts/infer.py` against the
+  same 3-study sample test set with exp005 weights — 0 prior fallbacks, same 2 dual-flip studies
+  (a property of the DICOM data, not the model), and confirmed the output probabilities are
+  genuinely different from exp002's rehearsal output (real weight swap, not a stale/cached run).
+  **Not yet pushed to Kaggle** — holding until the user confirms they've pinned a modern GPU
+  accelerator in the Kaggle notebook UI (still-open item from the prior instruction batch), to
+  avoid burning another run on a P100/CPU-fallback cycle. The updated kernel is staged and ready
+  to push the moment that's confirmed.
+- 2026-09-09: **exp006 complete (all 5 folds, resumed once after hitting the 7h wall-clock cap at
+  epoch 23/25 — resubmitted, confirmed genuine resume via log, finished epoch 24 + eval in
+  ~19min).** 3/5 folds' `best.pt` writes were quota-guard-skipped during the resumed run (headroom
+  briefly at ~14GB, below the 15GB floor) — regenerated with `scripts/repack_best.py` from their
+  `checkpoint.pt` (no retraining needed), then deleted all 5 `checkpoint.pt` now that the
+  experiment is complete, recovering headroom to 20.8GB. **exp006 (ViT-B) vs exp005 (ViT-S),
+  both on labels_v3_candidate — clean (non-circular) comparison against the ORIGINAL
+  labels_v2_final**: OOF macro **+0.0050** (clears the +0.004 keep bar), MCL +0.0146 (just under
+  the +0.015 weak-label bar but moot since the macro path already clears independently), gold-58
+  macro -0.0009 (noise-level on n=58, not concerning). **KEEP, per the standing scale-ladder
+  rule** — same ViT-B-beats-ViT-S pattern as the exp002-vs-exp003 finding, now confirmed on the
+  v3-label generation too. ViT-B's case for the final ensemble strengthens further.
+  **Quota watch**: dropped to 14.2GB (below both thresholds) during this run before the
+  best.pt/checkpoint cleanup above — flagged and fixed same-session; now 20.8GB.
+- 2026-09-09: **exp007 forced eval at epoch 10 — result is the "in between" case, held for user
+  decision, NOT resumed further.** Used a resume trick (`configs/exp007_resnet3d_slot_v3labels_eval10.yaml`,
+  `epochs: 11` — all 5 folds' checkpoints store `epoch=10`, so `--resume auto` sets
+  `start_epoch=11` and the training loop's `range(11,11)` never executes, falling straight to the
+  eval block with zero extra training). **Found and fixed a real bug this exposed**: `epoch` was
+  only ever bound inside the `for epoch in range(...)` loop, so a zero-iteration resume (this
+  trick, or any future one like it) would hit `NameError` in the post-loop eval/summary code —
+  fixed by pre-initializing `epoch = start_epoch - 1` before the loop. Result: solo OOF macro (vs
+  labels_v2_final) **0.693**, mean per-label OOF correlation vs exp005 **0.444**. Per the
+  pre-registered rule (corr>0.92 -> kill; corr<0.85 AND macro>=0.80 -> resume to epoch 20) —
+  correlation is comfortably low (genuine diversity signal) but macro is well under 0.80, so
+  neither branch cleanly applies. **Held for the user's call** rather than deciding unilaterally;
+  noted that at only 40% trained, low correlation could reflect real architectural diversity or
+  just be undertrained noise — more epochs are the only way to disambiguate, which is exactly the
+  costly option in question. Per-label correlation detail: Effusion 0.85 and Synovitis 0.80 are
+  notably higher than the rest (0.21-0.49), worth a second look if exp007 is revisited.
+- 2026-09-09: **Ensemble assembly (the main deliverable) — greedy forward selection on OOF-vs-
+  labels_v2_final macro, gold-58 as tripwire only.** Candidate pool: {exp002, exp003, exp005,
+  exp006} (exp007 excluded — not yet accepted, see above). Solo macros: exp002 0.8481, exp003
+  0.8536, exp005 0.8631, exp006 0.8681. **GLOBAL greedy result: {exp006, exp003, exp005}**
+  (exp002 dropped — fully superseded by exp006, its v3-label ViT-B successor), **macro 0.8744** —
+  clearly above the best solo model, real ensemble value. **Per-label greedy macro: 0.8754**, only
+  **+0.0010** over global — **below the 0.002 bar, so recommending the simpler GLOBAL recipe**,
+  per instruction. gold-58 tripwire on the global recipe: **0.8960** (healthy, consistent with the
+  OOF story — no sign of the selection overfitting to labels_v2_final in some gold-58-divergent
+  way). Full per-label recipe (member set + prob-mean/rank-mean choice) written to
+  `artifacts/ensemble_recipe.csv` (`scripts/build_ensemble.py`).
+- 2026-09-09: **TTA test (laterality-swap dual-pass) on the chosen ensemble — MEASURED and
+  REJECTED.** No cached data existed for this (training-time eval never applies the flip
+  augmentation), so real inference passes were run for all 3 members x 5 folds on val+gold
+  (`scripts/eval_tta_lateral_swap.py`, `oof_flipped_tta.parquet`/`gold58_predictions_flipped_tta.parquet`
+  per fold). Blending each member's normal+flipped pass before the usual ensemble blend: **OOF
+  macro 0.8744 -> 0.8730, delta -0.0014** — 8/12 labels regressed (Lateral Meniscus -0.0053,
+  Lateral OA -0.0033, Fracture -0.0025 the worst), only PF OA/Baker's/Contusion improved
+  marginally (+0.0004 to +0.0006). **Not kept** — OOF-negative, per instruction. Plausible
+  explanation: laterality-swap TTA helps most when a model's side-handling is weak; these models
+  already handle laterality directly (dataset-level flip-to-canonical + swap-augmentation during
+  training), so forcing a second mirrored pass mostly just adds noise from real (non-symmetric)
+  imaging artifacts that a naive horizontal flip doesn't actually cancel out.
+- 2026-09-09: **Efficiency track started — exp008 launched** (`configs/exp008_dinov2s_slot_distilled.yaml`,
+  job 24704, all 5 folds running). DINOv2 ViT-S/14 (same backbone as exp002/005), T=16 (down from
+  24), 320px (down from 384) for the CLAUDE.md §8 runtime target. New KL+BCE mixed loss
+  (`scripts/train.py:kl_bce_mix_loss` — binary-KL per label, not `nn.KLDivLoss`, since each target
+  is an independent sigmoid output, not a softmax distribution over the 12 labels) — BCE against
+  `labels_v3_candidate`, KL against `artifacts/labels/ensemble_teacher_v1.parquet`
+  (`scripts/build_ensemble_teacher.py`: the ACCEPTED global recipe {exp006,exp003,exp005} blended
+  over all 4,407 studies — OOF for the ~4,349 non-gold, fold-ensembled for the 58 gold — same
+  non-circularity discipline as the label-blend scripts). `distill_weight: 0.5`, not deeply tuned.
+  Added `RSNAKneeDataset.distill_labels_parquet` (optional, backward-compatible — every prior
+  experiment config omits it and is unaffected) with the SAME laterality-swap-consistency handling
+  as the regular labels/weights. Smoke-tested the loss function (forward+backward on synthetic
+  data) before launch. Acceptance target: within 0.015 OOF macro of the ensemble's own 0.8744.
+- 2026-09-09: **Ensemble submission notebook prepped** (`notebooks/submit-ensemble.ipynb`,
+  probe #3 — held, not pushed to Kaggle, per instruction) — 3-member ensemble, GLOBAL recipe,
+  degradation ladder (3 members -> 2 members -> smallest model only; TTA excluded from the ladder
+  since it measured OOF-negative above). **Found and fixed a real correctness gap while building
+  it**: "rank-mean" blending is a population statistic (each model's predictions ranked against
+  the OOF batch) — meaningless for a single new test study with no population to rank against.
+  Fixed with an empirical-CDF lookup (`infer_core.empirical_percentile`/`ensemble_blend`) against
+  each member's own stored OOF score distribution (`scripts/build_rank_references.py` ->
+  `rank_reference.npz`, ~207KB/member, uploaded alongside each member's weights). Also refactored
+  `infer_core.run_study_inference` to extract a `_run_orientation` primitive and added
+  `run_study_inference_tta` as a properly-corrected accuracy-seeking dual-pass (the initial draft
+  hackishly reused `run_study_inference`'s side-resolution args to force orientations, which
+  silently skipped the required paired-label swap on the forced-flip pass — caught and fixed
+  before this ever ran for real, not after). Uploaded `hrdevelops/rsna-knee-exp006-weights` and
+  `hrdevelops/rsna-knee-exp003-weights` (best.pt x5 + rank_reference.npz each) to Kaggle — exp005's
+  was already up from the previous round. Runtime projection is a calibration-based estimate
+  inside the notebook itself (measures real per-study cost on the first studies, projects each
+  ladder rung, picks the highest one that fits budget with margin) — not yet backed by an actual
+  GPU run, which needs the pinned accelerator.
+- 2026-09-09/10: **exp008 finished — real distillation signal, zero deployable weights, two real
+  bugs found and fixed.** 4/5 folds "completed" (fold3 crashed, see below); the eval numbers ARE
+  usable (computed in-memory, not gated by the checkpoint guard) and are genuinely promising:
+  OOF macro vs the ORIGINAL labels_v2_final **0.8714** (4-fold mean) — only **-0.0030** off the
+  full 3-member ensemble's 0.8744, comfortably inside the 0.015 acceptance target for a model with
+  T=16/320px instead of the ensemble's T=24/384 x3 backbones. gold-58 macro 0.8876 (4-fold mean),
+  also close to the ensemble's 0.896 tripwire. **But `find ... -name '*.pt'` returns nothing at
+  all for this experiment** — every checkpoint AND every best.pt write across all 5 folds and the
+  whole ~2h run was silently skipped by the quota guard, because headroom (14.2GB) was ALREADY
+  below the 15GB routine-save floor from before the job even launched — this isn't the guard
+  firing occasionally as designed, it's the guard firing on literally every write for the entire
+  run, which the existing code never surfaced any differently from a normal occasional skip.
+  **Root cause of launching into this: headroom was checked (14.24GB) before submitting but not
+  cross-referenced against the 15GB floor as a go/no-go gate** — fixed by adding a loud pre-flight
+  check at the top of `main()` (prints a clear warning if starting headroom is already below the
+  floor, so this is caught in the first lines of the log instead of discovered after 2 hours).
+  Separately, **fold3 diverged to NaN loss at epoch 16** (healthy 0.197 at epoch 15, `nan` from
+  epoch 16 onward, all 9 remaining epochs wasted) and then crashed `roc_auc_score` at the final
+  eval (`ValueError: Input contains NaN`) since nothing catches a non-finite loss before it
+  corrupts every parameter the optimizer step touches — fixed with a per-batch
+  `torch.isfinite(loss)` guard that skips just that one batch's optimizer step (zero-out grads,
+  continue) instead of applying NaN gradients. The other 4 folds trained cleanly with no
+  instability at all, so this was a single bad-batch event, not a systemic loss-function issue.
+  **exp008 needs a full relaunch (all 5 folds) once headroom is safely and durably above 15GB** —
+  currently still 14.2GB; the natural unblock is the ~19GB tied up in exp007's held
+  checkpoint+best.pt (still awaiting the user's kill/continue/hold decision from the "in between"
+  correlation result above), flagged back to the user rather than deleted unilaterally.
+- 2026-09-10: **exp007 (3D ResNet-50 second architecture family) KILLED.** Epitaph: at only
+  10/25 epochs (40% trained), mean per-label OOF correlation vs exp005
+  was 0.444 — genuinely low, but solo macro (0.693) never reached the 0.80 bar needed to justify
+  the ~10.5h/fold cost of finding out whether that low correlation was real architectural
+  diversity or just an undertrained model's noise. The one detail worth remembering if a 3D/2.5D
+  architecture split is ever revisited: **Effusion (0.85) and Synovitis (0.80) correlated far
+  higher with the 2D ensemble than every other label (0.21-0.49)** — both are diffuse,
+  whole-joint-fluid findings without the mirror-symmetric medial/lateral structure most of the
+  other targets have, so a 3D volumetric view may genuinely converge toward similar features for
+  these two specifically, while diverging more on the anatomically-lateralized labels. Deleted all
+  checkpoints/best.pt (~19GB freed, confirmed via live quota read: 14.2GB -> **33.9GB**
+  headroom). `configs/exp007_resnet3d_slot_v3labels*.yaml` and `src/rsna_knee/model_3d.py` stay in
+  git for reproducibility if a 3D architecture is ever revisited with a real epoch budget.
+- 2026-09-10: **exp008 relaunched clean — all 5 folds COMPLETED with deployable weights this
+  time** (job 24759, ~2h/fold, no crashes, NaN-batch guard never even needed to fire — fold3's
+  earlier divergence doesn't recur on this seed/run). Checkpoint mtimes verified per-fold against
+  actual epoch progress (all 5 fresh, matching epoch 24). **Full eval reproduces ~0.87 territory as
+  required**: OOF macro vs the ORIGINAL labels_v2_final **0.8708** (all 5 folds, matches the
+  earlier 4-fold estimate of 0.8714 almost exactly) — delta **-0.0036** vs the 3-member ensemble's
+  0.8744, comfortably inside the 0.015 acceptance target. gold-58 macro **0.8882 +/- 0.0032**
+  (tight across folds). **exp008 is accepted as the efficiency-track model.** Weights uploaded to
+  Kaggle as `hrdevelops/rsna-knee-exp008-weights`.
+- 2026-09-10: **exp008 fold-count question — honest answer, not a cherry-pick.** The only data
+  where all 5 folds' models predict the SAME studies is gold-58 (OOF by definition gives each
+  study exactly one fold's prediction, so there's no multi-fold-average signal available there).
+  On gold-58, averaged over ALL possible subsets of each size (not just the best one, to avoid
+  overselling a small-n=58 lucky pick): 1-fold mean delta vs full-5 **-0.0060**, 2-fold
+  **-0.0030**, 3-fold **-0.0014**, 4-fold **-0.0004**. Read literally, the "within 0.001 of 5"
+  bar is cleared only at 4 folds on average (best-case 3-fold subsets do clear it, e.g. +0.0004,
+  but that's cherry-picking one of 10 combinations on n=58 — not a reliable basis for a fixed
+  choice). **Decision: don't hardcode a fold count.** `notebooks/submit-efficiency.ipynb` treats
+  fold count as another degradation-ladder rung (5 -> 4 -> fewer), chosen by the same
+  calibration-based runtime projection as the ensemble notebook — defaults to all 5 when the time
+  budget allows (best expected accuracy, and the per-fold cost is cheap for this small model
+  anyway), only drops folds under real time pressure, informed by the fact that the accuracy cost
+  of doing so is small and gradual rather than a cliff.
+- 2026-09-10: **Load-test rehearsal (CLAUDE.md §9), first bug found and fixed.** Built a synthetic
+  1300-study test set from real train studies (`scripts/build_synthetic_loadtest.py` — symlinks
+  `train_series/<study>` dirs into a `test_series/` tree, no data duplication, writes
+  test.csv/test_series.csv matching the exact hidden-test schema) and two rehearsal harnesses
+  (`scripts/rehearse_ensemble.py`, `scripts/rehearse_efficiency.py`) that mirror the two
+  notebooks' exact logic against local paths. **Ensemble rehearsal passed cleanly** on a 20-study
+  sanity pass: 71s total, correct rung selection (calibration projected rung 0 fits, chosen
+  correctly), 0 prior fallbacks, 7/20 dual-flip (real tag-coverage variance on real train data).
+  **Efficiency rehearsal hung on the same 20 studies** — root cause: `os.cpu_count()` reported
+  **192** on this shared HPC SLURM node (the node's full core count) rather than the job's actual
+  `--cpus-per-task=16` allocation, so `DECODE_WORKERS` spawned 192 worker processes that thrashed
+  16 real cores and never finished decoding. Fixed in both the rehearsal script and the notebook
+  itself: prefer `SLURM_CPUS_PER_TASK` when present, and cap the worker count at 32 regardless
+  (Kaggle's own `os.cpu_count()` is expected to already be correct, so the cap should be a no-op
+  there, but costs nothing to have). Re-running the fixed efficiency rehearsal now.

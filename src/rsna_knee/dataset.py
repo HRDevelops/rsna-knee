@@ -1,3 +1,17 @@
+# Copyright 2026 Husnain Rasool
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Dataset for the 2.5D slot model (CLAUDE.md §5, configs/exp001_dinov2s_slot.yaml).
 
 Per study: assigns each of its series to one of 6 canonical slots
@@ -57,11 +71,13 @@ def _patch_size_for_backbone(backbone_name: str) -> int:
     """timm ViT backbone names encode patch size as `patchNN` (e.g. vit_small_patch14_dinov2,
     vit_small_patch16_dinov3) — parse it instead of hardcoding, since a hardcoded 14 silently
     produces an out_size not divisible by a patch16 backbone's patch size (AssertionError deep in
-    timm's patch_embed, found 2026-09-08 when exp004/DINOv3-S crashed on this)."""
+    timm's patch_embed, found 2026-09-08 when exp004/DINOv3-S crashed on this). Non-ViT backbones
+    (e.g. exp007's 3D ResNet) have no patch-grid constraint at all — patch=1 means
+    _nearest_patch_multiple is a no-op, using image_size exactly as configured."""
     for part in backbone_name.split("_"):
         if part.startswith("patch") and part[5:].isdigit():
             return int(part[5:])
-    return _DINOV2_PATCH
+    return 1
 
 
 def load_cache_manifest(manifest_dir: Path) -> pd.DataFrame:
@@ -114,6 +130,7 @@ class RSNAKneeDataset(Dataset):
         decode_audit_parquet: Path,
         fold: int,
         split: str,  # "train" | "val" | "gold"
+        distill_labels_parquet: Path | None = None,
     ):
         assert split in ("train", "val", "gold")
         self.cfg = cfg
@@ -143,6 +160,14 @@ class RSNAKneeDataset(Dataset):
         labels_df = pd.read_parquet(labels_parquet).set_index("study_uid")
         self.has_confidence_weight = f"{TARGET_COLUMNS[0]}__confidence_weight" in labels_df.columns
         self.labels_df = labels_df
+
+        # exp008 (efficiency-track distillation, CLAUDE.md §6 step 5 / §8): optional second soft
+        # target (the ensemble teacher's blended predictions) used for a KL-divergence loss
+        # component alongside the usual BCE-to-labels_v3 term. None for every non-distillation run.
+        self.distill_df = (
+            pd.read_parquet(distill_labels_parquet).set_index("study_uid")
+            if distill_labels_parquet is not None else None
+        )
 
         final_side_df = pd.read_csv(final_side_csv)
         self.final_side_map = final_side_df.set_index("study_uid")["final_side"].to_dict()
@@ -208,6 +233,14 @@ class RSNAKneeDataset(Dataset):
         weights = weights.clamp(min=0.1)
         return probs, weights
 
+    def _distill_for(self, study_uid: str) -> torch.Tensor:
+        """Ensemble-teacher soft probabilities for the KL distillation loss (exp008) — zeros when
+        distillation isn't configured for this run (loss_type != kl_bce_mix means it's unused)."""
+        if self.distill_df is None:
+            return torch.zeros(len(TARGET_COLUMNS), dtype=torch.float32)
+        row = self.distill_df.loc[study_uid]
+        return torch.tensor([float(row[f"{c}__probability"]) for c in TARGET_COLUMNS], dtype=torch.float32)
+
     def __getitem__(self, idx: int) -> dict:
         study_uid = self.study_uids[idx]
         slots = dict(self.slot_map[study_uid])  # copy, may be mutated by fluid-flag-corrupt aug
@@ -249,12 +282,15 @@ class RSNAKneeDataset(Dataset):
             mask[slot_idx] = True
 
         probs, weights = self._labels_for(study_uid)
+        distill_probs = self._distill_for(study_uid)
         if do_lat_swap:
             probs = probs.clone()
             weights = weights.clone()
+            distill_probs = distill_probs.clone()
             for i, j in LATERALITY_SWAP_PAIRS:
                 probs[i], probs[j] = probs[j].item(), probs[i].item()
                 weights[i], weights[j] = weights[j].item(), weights[i].item()
+                distill_probs[i], distill_probs[j] = distill_probs[j].item(), distill_probs[i].item()
 
         return {
             "study_uid": study_uid,
@@ -262,6 +298,7 @@ class RSNAKneeDataset(Dataset):
             "mask": mask,             # [6] bool, True = slot present
             "labels": probs,          # [12] soft targets
             "weights": weights,       # [12] per-target confidence weight
+            "distill_labels": distill_probs,  # [12] ensemble-teacher soft targets (exp008 KL term)
         }
 
     def _sample_geometric_params(self) -> dict:
@@ -297,4 +334,5 @@ def collate_fn(batch: list[dict]) -> dict:
         "mask": torch.stack([b["mask"] for b in batch]),
         "labels": torch.stack([b["labels"] for b in batch]),
         "weights": torch.stack([b["weights"] for b in batch]),
+        "distill_labels": torch.stack([b["distill_labels"] for b in batch]),
     }

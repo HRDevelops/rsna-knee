@@ -1,0 +1,52 @@
+# Frozen ensemble recipe v1 (2026-09-09/10) — the submission notebook loads THIS file rather than
+# hardcoding member/method lists, so a future recipe change is a new versioned file + one config
+# pointer, not a notebook edit. Selected by greedy forward selection on OOF macro-AUC vs the
+# ORIGINAL labels_v2_final report labels (gold-58 used only as a tripwire, never for selection —
+# scripts/build_ensemble.py). Per-label greedy selection was also evaluated and only gained
+# +0.0010 over this GLOBAL recipe (same 3 members for every label) — below the 0.002 bar for the
+# added deployment complexity, so GLOBAL was kept. TTA (laterality-swap dual-pass) was measured
+# and rejected (scripts/eval_tta_lateral_swap.py, OOF delta -0.0014) — recorded here so the
+# decision is traceable to this exact recipe version, not just prose in EXPERIMENTS.md.
+version: 1
+created: "2026-09-10"
+selection_method: greedy_forward_selection_oof_vs_labels_v2_final_macro
+oof_macro_vs_labels_v2_final: 0.8744
+gold58_tripwire_macro: 0.8960
+per_label_greedy_macro: 0.8754   # +0.0010 over global — below the 0.002 bar, global kept
+tta:
+  enabled: false
+  measured_oof_delta: -0.0014
+  note: "8/12 labels regressed with TTA; not adopted"
+
+members:
+  - name: exp006_dinov2b_slot_v3labels
+    backbone: vit_base_patch14_dinov2.lvd142m
+    kaggle_dataset: rsna-knee-exp006-weights
+    slices_per_series: 24
+    image_size: 384
+  - name: exp003_dinov2b_slot_v2labels
+    backbone: vit_base_patch14_dinov2.lvd142m
+    kaggle_dataset: rsna-knee-exp003-weights
+    slices_per_series: 24
+    image_size: 384
+  - name: exp005_dinov2s_slot_v3labels
+    backbone: vit_small_patch14_dinov2.lvd142m
+    kaggle_dataset: rsna-knee-exp005-weights
+    slices_per_series: 24
+    image_size: 384
+
+# Every label currently lists the same 3 members (the GLOBAL recipe) — kept per-label structured
+# rather than a single shared tuple so a future per-label override is a data change, not a code one.
+recipe:
+  ACL:               {members: [exp006_dinov2b_slot_v3labels, exp003_dinov2b_slot_v2labels, exp005_dinov2s_slot_v3labels], method: prob-mean}
+  MCL:               {members: [exp006_dinov2b_slot_v3labels, exp003_dinov2b_slot_v2labels, exp005_dinov2s_slot_v3labels], method: prob-mean}
+  Medial Meniscus:   {members: [exp006_dinov2b_slot_v3labels, exp003_dinov2b_slot_v2labels, exp005_dinov2s_slot_v3labels], method: prob-mean}
+  Lateral Meniscus:  {members: [exp006_dinov2b_slot_v3labels, exp003_dinov2b_slot_v2labels, exp005_dinov2s_slot_v3labels], method: prob-mean}
+  Medial OA:         {members: [exp006_dinov2b_slot_v3labels, exp003_dinov2b_slot_v2labels, exp005_dinov2s_slot_v3labels], method: rank-mean}
+  Lateral OA:        {members: [exp006_dinov2b_slot_v3labels, exp003_dinov2b_slot_v2labels, exp005_dinov2s_slot_v3labels], method: prob-mean}
+  PF OA:             {members: [exp006_dinov2b_slot_v3labels, exp003_dinov2b_slot_v2labels, exp005_dinov2s_slot_v3labels], method: rank-mean}
+  Effusion:          {members: [exp006_dinov2b_slot_v3labels, exp003_dinov2b_slot_v2labels, exp005_dinov2s_slot_v3labels], method: rank-mean}
+  Synovitis:         {members: [exp006_dinov2b_slot_v3labels, exp003_dinov2b_slot_v2labels, exp005_dinov2s_slot_v3labels], method: rank-mean}
+  Baker's:           {members: [exp006_dinov2b_slot_v3labels, exp003_dinov2b_slot_v2labels, exp005_dinov2s_slot_v3labels], method: rank-mean}
+  Contusion:         {members: [exp006_dinov2b_slot_v3labels, exp003_dinov2b_slot_v2labels, exp005_dinov2s_slot_v3labels], method: rank-mean}
+  Fracture:          {members: [exp006_dinov2b_slot_v3labels, exp003_dinov2b_slot_v2labels, exp005_dinov2s_slot_v3labels], method: prob-mean}

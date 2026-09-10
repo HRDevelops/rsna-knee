@@ -31,7 +31,8 @@ from torch.utils.data import DataLoader
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from rsna_knee.dataset import TARGET_COLUMNS, RSNAKneeDataset, collate_fn  # noqa: E402
-from rsna_knee.model import SlotModel, get_param_groups  # noqa: E402
+# SlotModel/get_param_groups (2D) vs Slot3DModel/get_param_groups (exp007 3D) are imported inside
+# main() based on cfg["model"]["family"] — see the model_family branch below.
 
 
 def expand_env(obj):
@@ -91,6 +92,23 @@ def weighted_bce_loss(logits: torch.Tensor, targets: torch.Tensor, weights: torc
     return (loss * weights).sum() / weights.sum().clamp(min=1e-6)
 
 
+def kl_bce_mix_loss(logits: torch.Tensor, labels: torch.Tensor, weights: torch.Tensor,
+                     distill_labels: torch.Tensor, distill_weight: float) -> torch.Tensor:
+    """exp008 (efficiency-track distillation): mix of BCE-to-labels_v3 (the usual supervised term,
+    weighted by per-study/per-label confidence same as always) and KL-divergence-to-the-ensemble-
+    teacher's soft predictions (unweighted — the teacher's own per-label agreement-based confidence
+    is already baked into ensemble_teacher_v1.parquet's blend, no need to double-apply weighting
+    here). Both targets are Bernoulli (independent per-label sigmoid outputs, not a softmax
+    distribution), so KL is computed per-label via the binary-KL identity, not nn.KLDivLoss (which
+    assumes a categorical/softmax distribution over the last dim)."""
+    bce = weighted_bce_loss(logits, labels, weights)
+    probs = torch.sigmoid(logits).clamp(1e-6, 1 - 1e-6)
+    teacher = distill_labels.clamp(1e-6, 1 - 1e-6)
+    kl = teacher * (teacher.log() - probs.log()) + (1 - teacher) * ((1 - teacher).log() - (1 - probs).log())
+    kl = kl.mean()
+    return (1 - distill_weight) * bce + distill_weight * kl
+
+
 def quota_headroom_gb(min_gb: float = 15.0) -> tuple[float | None, bool]:
     """BeeGFS quota headroom in GB, or (None, True) if the check itself fails — a broken quota
     probe must never block training. See docs/EXPERIMENTS.md 2026-09-08: the shared 400GiB quota
@@ -115,7 +133,15 @@ def quota_headroom_gb(min_gb: float = 15.0) -> tuple[float | None, bool]:
 def safe_torch_save(state: dict, path: Path, min_gb: float = 15.0) -> None:
     """Checkpoint write guarded by quota headroom — logs loudly and SKIPS the write instead of
     crashing the run when headroom is tight (CLAUDE.md §11 resumability: a skipped checkpoint just
-    means resume falls back to the previous one, whereas a mid-write ENOSPC can corrupt it)."""
+    means resume falls back to the previous one, whereas a mid-write ENOSPC can corrupt it).
+
+    2026-09-08 bug (exp003, all 5 folds): the wall-clock-triggered save is the LAST CHANCE to
+    preserve a run's progress before the process exits — applying the same 15GB comfort floor to
+    it as to a routine per-epoch save (which gets many more chances to succeed later) meant every
+    exp003 fold lost 23/25 epochs of a healthy, nearly-finished run because headroom sat at
+    ~11.5GB, above what an actual ENOSPC would need but below the floor. Callers on a last-chance
+    path should pass a much lower min_gb (sized to the actual checkpoint, not a round comfort
+    number) so the write is only skipped when it would truly risk corrupting the filesystem."""
     headroom_gb, ok = quota_headroom_gb(min_gb)
     if not ok:
         print(f"QUOTA GUARD: headroom {headroom_gb:.1f}GB < {min_gb}GB floor — "
@@ -149,7 +175,7 @@ def component_grad_norms(model: nn.Module) -> dict[str, float]:
 
 
 @torch.no_grad()
-def run_inference(model: SlotModel, loader: DataLoader, device: str, autocast_dtype) -> pd.DataFrame:
+def run_inference(model: nn.Module, loader: DataLoader, device: str, autocast_dtype) -> pd.DataFrame:
     model.eval()
     rows = []
     for batch in loader:
@@ -220,6 +246,19 @@ def main() -> None:
     seed = args.seed_override if args.seed_override is not None else cfg["seed"]
     set_seed(seed)
 
+    # Pre-flight quota check (2026-09-09: exp008 ran all 5 folds for ~2h with headroom already
+    # below the 15GB routine-save floor from the start — every single checkpoint write across the
+    # whole run was silently skipped, so 4/5 folds "completed" with zero deployable weights.
+    # safe_torch_save's per-write guard is correct but silent-by-design; this catches the
+    # already-too-tight case loudly at job START instead of discovering it hours later).
+    startup_headroom, startup_ok = quota_headroom_gb(min_gb=15.0)
+    if not startup_ok:
+        print(f"QUOTA GUARD: starting with headroom {startup_headroom}GB, already below the "
+              f"15GB routine-save floor — every checkpoint write this run will be skipped until "
+              f"headroom recovers. Proceeding anyway (eval-only artifacts still save), but no "
+              f"weights will be deployable unless quota is freed before this run finishes.",
+              file=sys.stderr)
+
     rsna_root = Path(os.environ.get("RSNA_ROOT", args.out.parent))
     raw_dir = args.raw or (rsna_root / "data" / "raw")
     cache_manifests = args.cache_manifests or (rsna_root / "artifacts" / "cache_manifests")
@@ -232,6 +271,7 @@ def main() -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     autocast_dtype = torch.bfloat16 if cfg["train"]["precision"] == "bf16" else torch.float16
 
+    distill_labels = cfg["data"].get("distill_labels")
     common_kwargs = dict(
         cfg=cfg,
         cache_dir=Path(cfg["data"]["cache_dir"]),
@@ -242,6 +282,7 @@ def main() -> None:
         final_side_csv=rsna_root / "artifacts" / "final_side.csv",
         decode_audit_parquet=rsna_root / "artifacts" / "decode_audit.parquet",
         fold=args.fold,
+        distill_labels_parquet=Path(distill_labels) if distill_labels else None,
     )
     train_ds = RSNAKneeDataset(split="train", **common_kwargs)
     val_ds = RSNAKneeDataset(split="val", **common_kwargs)
@@ -254,9 +295,17 @@ def main() -> None:
     val_loader = DataLoader(val_ds, batch_size=bs, shuffle=False, num_workers=4, collate_fn=collate_fn)
     gold_loader = DataLoader(gold_ds, batch_size=bs, shuffle=False, num_workers=4, collate_fn=collate_fn)
 
-    model = SlotModel(cfg["model"]["backbone"], num_targets=cfg["model"]["num_targets"]).to(device)
-    param_groups = get_param_groups(model, cfg["train"]["lr"], cfg["train"]["backbone_lr_mult"],
-                                     cfg["train"]["weight_decay"])
+    model_family = cfg["model"].get("family", "vit2d")
+    if model_family == "resnet3d":
+        # exp007: 3D ResNet-50 ensemble-diversity family (src/rsna_knee/model_3d.py) — a separate
+        # module, not a branch inside SlotModel, so the working 2D path (exp001-006) is untouched.
+        from rsna_knee.model_3d import Slot3DModel, get_param_groups as get_param_groups_fn
+        model = Slot3DModel(num_targets=cfg["model"]["num_targets"]).to(device)
+    else:
+        from rsna_knee.model import SlotModel, get_param_groups as get_param_groups_fn
+        model = SlotModel(cfg["model"]["backbone"], num_targets=cfg["model"]["num_targets"]).to(device)
+    param_groups = get_param_groups_fn(model, cfg["train"]["lr"], cfg["train"]["backbone_lr_mult"],
+                                        cfg["train"]["weight_decay"])
     optimizer = torch.optim.AdamW(param_groups)
     scheduler = build_scheduler(optimizer, cfg["train"]["warmup_epochs"], cfg["train"]["epochs"],
                                  len(train_loader))
@@ -279,6 +328,9 @@ def main() -> None:
     t_start = time.time()
     max_seconds = args.max_hours * 3600
     epochs = cfg["train"]["epochs"]
+    epoch = start_epoch - 1  # defined even if the loop body never runs (start_epoch >= epochs —
+    # e.g. resuming with epochs set equal to the checkpoint's epoch, to force an eval-only pass
+    # without further training); reflects "last completed epoch" correctly in both cases.
 
     for epoch in range(start_epoch, epochs):
         model.train()
@@ -293,8 +345,14 @@ def main() -> None:
             optimizer.zero_grad(set_to_none=True)
             with torch.autocast(device_type="cuda", dtype=autocast_dtype):
                 logits = model(volumes, mask)
-                loss = weighted_bce_loss(logits, labels, weights) if cfg["train"]["label_confidence_weighting"] \
-                    else nn.functional.binary_cross_entropy_with_logits(logits, labels)
+                if cfg["train"]["loss"] == "kl_bce_mix":
+                    distill_labels = batch["distill_labels"].to(device, non_blocking=True)
+                    loss = kl_bce_mix_loss(logits, labels, weights, distill_labels,
+                                            cfg["train"]["distill_weight"])
+                elif cfg["train"]["label_confidence_weighting"]:
+                    loss = weighted_bce_loss(logits, labels, weights)
+                else:
+                    loss = nn.functional.binary_cross_entropy_with_logits(logits, labels)
             loss.backward()
             if args.debug_grad_norms and n_batches % 10 == 0:
                 norms = component_grad_norms(model)
@@ -308,6 +366,17 @@ def main() -> None:
             # starving their learning signal. This is very likely the actual collapse mechanism.
             for group in param_groups:
                 torch.nn.utils.clip_grad_norm_(group["params"], 1.0)
+            # NaN/Inf guard (2026-09-09: exp008 fold3 hit a single bad batch that produced a NaN
+            # loss around epoch 16, then stayed NaN for the rest of training — once a step actually
+            # applies NaN gradients, every parameter they touch is permanently poisoned, wasting
+            # every subsequent epoch and crashing the final AUC eval with no usable checkpoint at
+            # all. Skipping the step on a non-finite loss costs one batch's progress, not the run.
+            if not torch.isfinite(loss):
+                print(f"  epoch {epoch} batch {n_batches}: non-finite loss ({loss.item()}) — "
+                      f"skipping this batch's optimizer step.", file=sys.stderr)
+                optimizer.zero_grad(set_to_none=True)
+                n_batches += 1
+                continue
             optimizer.step()
             scheduler.step()
             ema.update(model)
@@ -318,9 +387,13 @@ def main() -> None:
             if time.time() - t_start > max_seconds:
                 print(f"Wall-clock guard triggered mid-epoch {epoch} — checkpointing and exiting.",
                       file=sys.stderr)
+                # Last-chance save: use a much lower floor than the routine per-epoch save (below).
+                # Skipping THIS one means total loss of the run's progress, not just a delayed
+                # retry next epoch — see the safe_torch_save docstring for the 2026-09-08 incident
+                # this fixes (exp003 lost 23/25 epochs on all 5 folds this way).
                 safe_torch_save({"model": model.state_dict(), "optimizer": optimizer.state_dict(),
                                   "scheduler": scheduler.state_dict(), "ema": ema.shadow, "epoch": epoch - 1},
-                                 ckpt_path)
+                                 ckpt_path, min_gb=3.0)
                 return
 
         print(f"epoch {epoch}: train_loss={epoch_loss / max(n_batches, 1):.4f}", file=sys.stderr)
