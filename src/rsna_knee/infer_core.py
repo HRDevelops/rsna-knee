@@ -103,6 +103,23 @@ class WallClockGuard:
         return self.elapsed() > self.budget * (1 - margin)
 
 
+def decode_one_for_pool(task: tuple) -> tuple:
+    """Picklable multiprocessing worker for batched decode (CLAUDE.md §8) — MUST live in a real
+    importable module, not a notebook cell or script __main__: a spawned child process re-imports
+    this module by name to find the function, which only works if it's something like
+    `rsna_knee.infer_core.decode_one_for_pool`, not a name defined interactively. Also sidesteps
+    the fork-after-CUDA-init deadlock (forking a process that already holds a CUDA context is
+    unsafe) since spawn starts each worker fresh with no inherited CUDA state — found 2026-09-10
+    when a cell-defined worker + default fork context hung the efficiency notebook's rehearsal.
+    task: (study_uid, study_series, series_root_str, T, out_size)."""
+    study_uid, study_series, series_root_str, T, out_size = task
+    try:
+        slots, tag_sides = decode_study_slots(study_uid, study_series, Path(series_root_str) / study_uid, T, out_size)
+        return study_uid, slots, tag_sides, None
+    except Exception as e:  # noqa: BLE001 - report the failure, don't crash the pool
+        return study_uid, {}, [], f"{type(e).__name__}: {e}"
+
+
 def decode_study_slots(
     study_uid: str, series_rows: list[dict], series_root: Path, T: int, out_size: int,
 ) -> tuple[dict[int, torch.Tensor], list[str]]:

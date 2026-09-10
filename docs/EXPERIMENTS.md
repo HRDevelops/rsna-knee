@@ -601,4 +601,49 @@ AUC, gold-58 AUC, and public LB only when actually probed (budget ≤2 probes/we
   16 real cores and never finished decoding. Fixed in both the rehearsal script and the notebook
   itself: prefer `SLURM_CPUS_PER_TASK` when present, and cap the worker count at 32 regardless
   (Kaggle's own `os.cpu_count()` is expected to already be correct, so the cap should be a no-op
-  there, but costs nothing to have). Re-running the fixed efficiency rehearsal now.
+  there, but costs nothing to have). **Still hung after that fix** — deeper root cause: a
+  `ProcessPoolExecutor` was created (default "fork" start method) AFTER the fold models were
+  already moved onto CUDA, and forking a process with an already-initialized CUDA context is
+  unsafe and can deadlock the child. Tried the standard fix (explicit `spawn` context) but caught
+  a SECOND, more fundamental problem before it could bite on actual Kaggle: both notebooks load
+  the `rsna_knee` package via a custom `importlib.util.spec_from_file_location` +
+  `sys.modules["rsna_knee"] = ...` injection (needed because the Kaggle dataset zip's extraction
+  doesn't preserve a normal importable package layout — see the 2026-09-08 Kaggle-notebook
+  entries) — a `spawn`ed child process starts a fresh interpreter that does NOT inherit this
+  injected `sys.modules` entry, so it can never `import rsna_knee.infer_core` to find the worker
+  function, regardless of whether that function lives in a notebook cell or a real package file.
+  **Switched to `ThreadPoolExecutor`** instead of a process pool, for both the rehearsal script
+  and the notebook: no fork/CUDA hazard (shared process), no pickling/import-visibility problem
+  (direct function reference, not cross-process), and still genuine parallelism for the actually
+  expensive part of decode, since DICOM decompression (pylibjpeg/gdcm) and numpy/scipy resampling
+  are C extensions that release the GIL — pure-Python multiprocessing was never really the load-
+  bearing part of "batched decode with multiprocessing" (CLAUDE.md §8), parallelizing the C-level
+  work is. Moved the worker function itself into `infer_core.decode_one_for_pool` (a real,
+  importable package function) regardless, since that's the correct fix even for threads and
+  keeps the door open for a process pool later if the import-visibility problem is ever solved
+  properly (e.g. a real `sys.path`-based package install instead of the injection trick).
+- 2026-09-10: **Load-test rehearsal, full 1300-study results.** Degradation ladder verified
+  correct on artificially time-starved runs first (45s/15s budgets on 50 studies): ensemble
+  dropped rung 0 -> rung 1 -> chose rung 2 (smallest model), then fell back to priors for 44/50
+  once genuinely out of time; efficiency dropped 5 -> 4 -> 3 -> 2 -> chose 1 fold, then fell back
+  to priors for 26/50. Both the rung-selection AND the wall-clock defense-in-depth fired
+  correctly, and both outputs stayed valid (correct row count, no NaNs) even with priors mixed
+  in. **Efficiency, full 1300 studies at a real, non-starved budget: COMPLETE in 784s (13.1
+  min)** — comfortably inside the CLAUDE.md §8 target of <=45min, all 5 folds used (fits easily),
+  0 prior fallbacks, 659/1300 dual-flip (real tag-coverage variance on real train studies).
+  `full1300_efficiency.csv` validated: 1300 rows, correct header incl. `Baker's`, no NaNs, values
+  in [0,1], no duplicate study UIDs. Ensemble rehearsal (3 members, rung 0) still running,
+  projected ~72 min — will log separately once complete.
+- 2026-09-10: **Load-test rehearsal, ensemble full-1300 completion (job 24774).** COMPLETE in
+  4089s (68.2 min) against the 5400s/90min budget — 24.3% margin, no wall-clock pressure. Rung 0
+  chosen (no-TTA + all 3 members: exp006_dinov2b_slot_v3labels, exp003_dinov2b_slot_v2labels,
+  exp005_dinov2s_slot_v3labels), calibrated from 10 studies at 3.31s/study -> projected 71.8min,
+  matching the actual 68.2min closely. 0 prior fallbacks, 659/1300 dual-flip (same count as the
+  efficiency run, as expected — both read the same side-tag coverage on the same synthetic test
+  set). `full1300_ensemble.csv` validated: shape (1300, 13), correct header incl. `Baker's`, 0
+  NaNs, values in [0.0083, 0.9996], 1300 unique study UIDs. **This completes CLAUDE.md §9's
+  load-test rehearsal for both submission notebooks** — both degradation ladders (rung/fold-count
+  selection AND wall-clock priors fallback) verified correct under real and artificially-starved
+  budgets, and both real full-1300 runs finished well inside budget with clean, fully-valid
+  output and zero crashes. Actual Kaggle submission still gated on pinning the accelerator and
+  clicking probe #1 per earlier decision — this rehearsal only clears the local/HPC readiness bar.

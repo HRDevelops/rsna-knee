@@ -1,5 +1,14 @@
-"""Local/HPC rehearsal of notebooks/submit-efficiency.ipynb's exact logic (fp16, batched
-multiprocessing decode, fold-count ladder) against local paths — CLAUDE.md §9 load-test rehearsal.
+"""Local/HPC rehearsal of notebooks/submit-efficiency.ipynb's exact logic (fp16, batched decode,
+fold-count ladder) against local paths — CLAUDE.md §9 load-test rehearsal.
+
+Batched decode uses ThreadPoolExecutor, not ProcessPoolExecutor (2026-09-10 finding, see
+infer_core.decode_one_for_pool's docstring): a process pool hit two real, compounding problems in
+a notebook-loaded-package context — (1) forking after CUDA is already initialized in the parent
+deadlocks the child, and (2) even switching to a spawn context, the custom sys.modules-injection
+package loader the notebooks use isn't visible to a freshly-spawned interpreter, so the worker
+function fails to import there either. Threads sidestep both (shared process, no pickling) and
+still parallelize the expensive part of decode, since DICOM decompression (pylibjpeg/gdcm) and
+numpy/scipy resampling are C extensions that release the GIL.
 
 Usage:
     python scripts/rehearse_efficiency.py \
@@ -13,7 +22,7 @@ import argparse
 import os
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import pandas as pd
@@ -22,22 +31,13 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from rsna_knee.dataset import TARGET_COLUMNS, _patch_size_for_backbone  # noqa: E402
 from rsna_knee.infer_core import (  # noqa: E402
-    WallClockGuard, decode_study_slots, nearest_patch_multiple, prior_row, run_study_inference,
+    WallClockGuard, decode_one_for_pool, nearest_patch_multiple, prior_row, run_study_inference,
 )
 from rsna_knee.model import SlotModel  # noqa: E402
 
 BACKBONE = "vit_small_patch14_dinov2.lvd142m"
 SLICES_PER_SERIES = 16
 IMAGE_SIZE = 320
-
-
-def _decode_one(task):
-    study_uid, study_series, series_root_str, T, out_size = task
-    try:
-        slots, tag_sides = decode_study_slots(study_uid, study_series, Path(series_root_str) / study_uid, T, out_size)
-        return study_uid, slots, tag_sides, None
-    except Exception as e:  # noqa: BLE001
-        return study_uid, {}, [], f"{type(e).__name__}: {e}"
 
 
 def main() -> None:
@@ -93,8 +93,8 @@ def main() -> None:
             for uid in study_uids
         ]
         results = {}
-        with ProcessPoolExecutor(max_workers=args.decode_workers) as pool:
-            futures = {pool.submit(_decode_one, t): t[0] for t in tasks}
+        with ThreadPoolExecutor(max_workers=args.decode_workers) as pool:
+            futures = {pool.submit(decode_one_for_pool, t): t[0] for t in tasks}
             for fut in as_completed(futures):
                 uid, slots, tag_sides, err = fut.result()
                 results[uid] = (slots, tag_sides, err)
