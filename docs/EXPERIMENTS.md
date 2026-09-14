@@ -721,3 +721,113 @@ AUC, gold-58 AUC, and public LB only when actually probed (budget ≤2 probes/we
   exited as designed — full 5-fold training launched (job 24783, `--max-hours 7.0` each,
   standard `train.sbatch` array). Result pending; will log OOF, per-label AUC, and the
   correlation-with-exp006 check once training completes.
+- 2026-09-10: **exp009 progress — session 1 of N.** All 5 folds hit the 7h wall-clock guard at
+  epoch 8/25 (train_loss 0.4895 -> 0.3421 over epochs 0-7, steady decline, no errors) — ConvNeXt-
+  V2-Base trains noticeably slower per epoch than exp006's ViT-B/14 at the same 384px/T=24/batch=8
+  config, so this will take several more 7h sessions per fold (job 24783 -> resumed as job 24826,
+  confirmed "Resumed from epoch 8" in all 5 fold logs, no restart-from-scratch). Will keep
+  resuming and logging progress here until all 5 folds reach epoch 25.
+- 2026-09-10: **Pre-submission verification pass (probe #1 = ensemble, probe #2 = efficiency —
+  exp002/v7 skipped per plan change).** Checked against the actual files/Kaggle API state, not
+  memory:
+  - **Weight dataset slugs** each notebook attaches (from `ensemble_recipe_v1.yaml` and
+    `submit-efficiency.ipynb` cell-1): ensemble -> `rsna-knee-exp006-weights`,
+    `rsna-knee-exp003-weights`, `rsna-knee-exp005-weights`; efficiency -> `rsna-knee-exp008-weights`.
+    Both also attach `rsna-knee-code` + the competition data.
+  - **Upload status — CRITICAL FINDING: none of the 5 datasets (code + 4 weights) currently exist
+    on Kaggle.** `kaggle datasets list -m` returns empty for the hrdevelops account, and a direct
+    `kaggle datasets files hrdevelops/<slug>` / `kaggle datasets metadata` 403s for every one of
+    the 5 slugs (sanity-checked against a dataset known to exist under the same account, which
+    resolves fine — this isn't an auth/permission artifact). A local `dataset-metadata.json` for
+    `rsna-knee-code` (datasetId 11937869, dated 2026-09-08) shows it existed at some point during
+    the earlier exp002 Kaggle-debugging arc — it does not resolve now, so either deleted since or
+    never fully finished uploading. **Conclusion: the first push for all 5 needs `kaggle datasets
+    create`, not `kaggle datasets version`** (version only works on a dataset that already exists).
+  - **Code dataset staleness — found and fixed.** A staging dir from that earlier arc,
+    `kaggle_staging/code/rsna_knee/` on HPC, existed but every file in it differed from current
+    `src/rsna_knee/` (confirmed via `diff`) — and its sibling `kaggle_staging/kernel/` still held
+    `submit-exp002.ipynb`, the exact stale probe this plan change explicitly drops. Refreshed
+    `kaggle_staging/code/rsna_knee/` from current `src/rsna_knee/` (all 6 `.py` files +
+    `ensemble_recipe_v1.yaml`); `diff` now reports no differences. **Do not push the
+    `kaggle_staging/kernel/` contents** — that's still the old exp002 kernel and unrelated to
+    the ensemble/efficiency notebooks.
+  - **Checkpoint bloat, worth knowing before uploading:** `best.pt` stores both `model` and `ema`
+    state dicts (only `ema` is ever loaded) — roughly double the needed size (900MB -> ~450MB for
+    the ViT-B members). `exp008`'s fold dirs additionally still have `checkpoint.pt` (full
+    optimizer state, 478MB x5 = ~2.4GB) sitting alongside `best.pt` from training's resume
+    mechanism — pointing `kaggle datasets create -p` at a fold dir as-is would upload that too.
+    exp003/005/006's fold dirs are already clean (best.pt only). Not fixed (out of scope for a
+    verification pass and touches training-resumability files), but worth trimming before upload
+    if size/upload-time becomes a problem — a separate ema-only staging copy would roughly halve
+    the weight datasets' total size.
+  - **Weight completeness**: all 4 experiments have 5/5 folds' `best.pt` present and intact on
+    HPC (exp003 900M x5, exp005 229M x5, exp006 900M x5, exp008 239M x5); `rank_reference.npz`
+    present for exp003/005/006 (needed for rank-mean blending) and correctly absent for exp008
+    (not an ensemble member, never uses rank-mean).
+  - **submission.csv correctness**: `TARGET_COLUMNS` (`dataset.py`) matches
+    `data/raw/sample_submission.csv`'s header exactly, character-for-character including the
+    apostrophe in `Baker's`; both notebooks build `sub_df` as
+    `["StudyInstanceUID"] + TARGET_COLUMNS` and assert the header, row count, UID-set equality,
+    and no-NaN before writing. No explicit `.clip(0,1)` call exists, and none is needed —
+    predictions come straight out of `torch.sigmoid`, which is mathematically bounded to [0,1]
+    even under fp16 rounding (can only saturate exactly to 0.0/1.0 at extremes, never overshoot);
+    the `>=0`/`<=1` assertion is a belt-and-suspenders check on that guarantee, not a substitute
+    for clipping. Prior-fallback path (`prior_row()` inside a per-study `try/except`) confirmed
+    present and unchanged in both notebooks' second-to-last cell.
+  - **Exact command** (run from wherever `kaggle_staging/` lives — on HPC:
+    `/shared/home/husnain.rasool/rsna-knee/kaggle_staging/code`):
+    ```bash
+    kaggle datasets create -p /shared/home/husnain.rasool/rsna-knee/kaggle_staging/code -r zip
+    ```
+    (`dataset-metadata.json` in that dir already has `id: hrdevelops/rsna-knee-code`,
+    `title: rsna-knee-code`, Apache-2.0 license — `-r zip` since the package is many small `.py`
+    files, faster as one archive than per-file upload.) The 4 weight datasets have no
+    `dataset-metadata.json` yet — create one per experiment dir (`kaggle datasets init -p <dir>`,
+    then edit `id`/`title` to the slugs above) before their first `kaggle datasets create -p <dir>`.
+- 2026-09-10: **Kaggle-CPU sanity, ensemble notebook.** Correction to the initial framing: the
+  ensemble notebook/`rehearse_ensemble.py` has **no `ThreadPoolExecutor` at all** — decode is
+  fully serial, one study at a time — so there's no "15 decode threads" setting on it to cap
+  (that figure is the efficiency notebook's `DECODE_WORKERS`). The real HPC-vs-Kaggle CPU risk
+  for a serial decode loop is numpy/scipy/torch's own BLAS/OpenMP thread pools implicitly using
+  every core the job's cgroup exposes, not anything the Python code spawns itself — simulated by
+  constraining both the SLURM allocation (`--cpus-per-task=4`) and `OMP_NUM_THREADS` /
+  `MKL_NUM_THREADS` / `OPENBLAS_NUM_THREADS` / `NUMEXPR_NUM_THREADS` to 4 (job 24831, full 1300
+  studies). Result pending.
+
+## OOF↔LB gap analysis (template — fill in once probe #1 is scored)
+
+Prepared 2026-09-10, not yet run — CLAUDE.md §7: "Expect an OOF↔LB gap; measure it once early,
+then trust deltas not absolutes." This is that one-time measurement, for probe #1 (the ensemble,
+first real submission under the plan-change decision skipping the stale exp002/v7 probe).
+
+**Reference point**: ensemble OOF macro-AUC (vs. `labels_v2_final`, gold-58 held out) = **0.8744**
+(greedy-forward-selected 3-member recipe, `ensemble_recipe_v1.yaml` — see the 2026-09-09 ensemble
+selection entries above). This is the number the LB score gets compared against.
+
+**Once the public LB score for probe #1 is in, fill in:**
+
+| | value |
+|---|---|
+| OOF macro-AUC (reference) | 0.8744 |
+| Public LB macro-AUC | *(fill in)* |
+| Gap (OOF − LB) | *(fill in)* |
+| Gold-58 macro-AUC (tripwire, for context only) | *(fill in from the run that produced 0.8744)* |
+
+**Interpretation rule (pre-registered, apply mechanically — don't rationalize a bad gap after
+the fact):**
+- **`|gap| < 0.02`**: validation is trustworthy. Proceed as planned — efficiency notebook is
+  probe #2, no changes to the label engine or fold construction triggered by this alone.
+- **`|gap| >= 0.02`**: **stop.** Do not burn probe #2 (or any further submission) until the gap is
+  understood. Investigate, in order of likelihood given CLAUDE.md §12's risk register:
+  1. **Site-level/report-template leakage** — check whether GroupKFold's report-template/site
+     clustering (§7) actually kept near-duplicate reports and same-site studies together; a leak
+     here inflates OOF relative to a genuinely held-out LB population.
+  2. **Prevalence shift** — CLAUDE.md §3 warns train/public-LB/private-LB prevalences may differ;
+     since AUC is prevalence-invariant per label this shouldn't by itself cause a gap, but confirm
+     no per-label AUC computation accidentally became threshold-sensitive.
+  3. **Label-engine ceiling** — the gold-58 tripwire AUC is the sanity check here: if gold-58 also
+     looks off relative to what individual experiment entries recorded, the label engine (not the
+     fold construction) is the more likely culprit.
+  - A negative gap (LB > OOF) is not automatically "good news" — re-run the same checklist; it can
+    indicate a fold-construction issue in the other direction (OOF harder than it should be) just
+    as easily as a real generalization win.
