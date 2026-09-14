@@ -16,6 +16,14 @@ preprocess.decode_series_to_uint8_fast for the validated approximation. Fold cou
 minimize the CLAUDE.md §4 efficiency formula (not "does it fit a budget") — see OOF_AUC_BY_FOLDS
 below and notebooks/submit-efficiency.ipynb cell-6 for the mirrored logic.
 
+2026-09-11 T4 adaptation: the main inference loop now decodes study N+1 in a background thread
+pool (infer_core.prefetch_decode) while study N runs on the GPU, instead of decoding a whole chunk
+then inferring the whole chunk in lockstep — profiled dual-GPU sharding for THIS notebook (single
+model, 5 folds) and found it not worth it: decode is already ~82% of per-study cost here, so the
+model-inference slice a second GPU would speed up is too small to be worth the added complexity
+(see the ensemble notebook, where the split is closer to 2:1 decode:model and dual-GPU sharding
+genuinely helps) — single-GPU + this decode/inference overlap gets nearly all the achievable gain.
+
 Usage:
     python scripts/rehearse_efficiency.py \
         --weights-dir $RSNA_ROOT/artifacts/exp008_dinov2s_slot_distilled \
@@ -38,7 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from rsna_knee.dataset import TARGET_COLUMNS, _patch_size_for_backbone  # noqa: E402
 from rsna_knee.infer_core import (  # noqa: E402
     WallClockGuard, decode_one_for_pool, decode_one_for_pool_fast, nearest_patch_multiple,
-    prior_row, run_study_inference,
+    prefetch_decode, prior_row, run_study_inference,
 )
 from rsna_knee.model import SlotModel  # noqa: E402
 
@@ -169,31 +177,46 @@ def main() -> None:
     done = {r["StudyInstanceUID"] for r in rows}
     remaining = [u for u in test_df["StudyInstanceUID"] if u not in done]
 
+    def task_for(uid: str) -> tuple:
+        return (uid, series_df[series_df["study_uid"] == uid].to_dict("records"), str(series_root),
+                SLICES_PER_SERIES, out_size)
+
+    remaining_tasks = [task_for(u) for u in remaining]
+
+    # Decode/inference overlap (2026-09-11 T4 adaptation): study N+1 decodes in a background
+    # thread pool (infer_core.prefetch_decode) while study N runs on the GPU, instead of the old
+    # decode-a-whole-chunk-then-infer-the-whole-chunk lockstep, which left the GPU idle for every
+    # chunk's entire decode phase and the CPU idle for every chunk's entire inference phase.
     n_prior_fallback = n_dual_flip = 0
-    for chunk_start in range(0, len(remaining), args.decode_chunk_size):
-        chunk_uids = remaining[chunk_start:chunk_start + args.decode_chunk_size]
+    processed = len(rows)
+    for uid, slots, tag_sides, err in prefetch_decode(remaining_tasks, decode_worker_fn, args.decode_workers):
         if guard.over(margin=0.05):
-            for uid in chunk_uids + remaining[chunk_start + args.decode_chunk_size:]:
-                rows.append({"StudyInstanceUID": uid, **{c: float(p) for c, p in zip(TARGET_COLUMNS, prior_row())}})
-                n_prior_fallback += 1
             break
-        decoded = decode_chunk(chunk_uids)
-        for uid in chunk_uids:
-            row = {"StudyInstanceUID": uid}
-            try:
-                slots, tag_sides, err = decoded[uid]
-                if err is not None or not slots:
-                    raise RuntimeError(err or "no series decoded successfully")
-                if all(s not in ("R", "L") for s in tag_sides):
-                    n_dual_flip += 1
-                probs = run_study_inference(slots, tag_sides, active_models, device, SLICES_PER_SERIES, out_size, autocast_dtype)
-                row.update({c: float(p) for c, p in zip(TARGET_COLUMNS, probs)})
-            except Exception as e:  # noqa: BLE001
-                n_prior_fallback += 1
-                row.update({c: float(p) for c, p in zip(TARGET_COLUMNS, prior_row())})
-            rows.append(row)
-        print(f"  {len(rows)}/{len(test_df)} studies, {guard.elapsed():.0f}s elapsed "
-              f"({guard.fraction_used():.1%} of budget)", file=sys.stderr)
+        row = {"StudyInstanceUID": uid}
+        try:
+            if err is not None or not slots:
+                raise RuntimeError(err or "no series decoded successfully")
+            if all(s not in ("R", "L") for s in tag_sides):
+                n_dual_flip += 1
+            probs = run_study_inference(slots, tag_sides, active_models, device, SLICES_PER_SERIES, out_size, autocast_dtype)
+            row.update({c: float(p) for c, p in zip(TARGET_COLUMNS, probs)})
+        except Exception as e:  # noqa: BLE001
+            n_prior_fallback += 1
+            row.update({c: float(p) for c, p in zip(TARGET_COLUMNS, prior_row())})
+        rows.append(row)
+        processed += 1
+        if processed % args.decode_chunk_size == 0 or processed == len(test_df):
+            print(f"  {processed}/{len(test_df)} studies, {guard.elapsed():.0f}s elapsed "
+                  f"({guard.fraction_used():.1%} of budget)", file=sys.stderr)
+
+    if processed < len(test_df):
+        done_now = {r["StudyInstanceUID"] for r in rows}
+        skipped = [u for u in remaining if u not in done_now]
+        print(f"  [BUDGET] {guard.elapsed():.0f}s used, {processed}/{len(test_df)} done — priors for the rest.",
+              file=sys.stderr)
+        for uid in skipped:
+            rows.append({"StudyInstanceUID": uid, **{c: float(p) for c, p in zip(TARGET_COLUMNS, prior_row())}})
+            n_prior_fallback += 1
 
     sub_df = pd.DataFrame(rows)[["StudyInstanceUID"] + TARGET_COLUMNS]
     sub_df.to_csv(args.out, index=False)

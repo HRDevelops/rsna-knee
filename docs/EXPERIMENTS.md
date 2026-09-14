@@ -792,7 +792,123 @@ AUC, gold-58 AUC, and public LB only when actually probed (budget ≤2 probes/we
   every core the job's cgroup exposes, not anything the Python code spawns itself — simulated by
   constraining both the SLURM allocation (`--cpus-per-task=4`) and `OMP_NUM_THREADS` /
   `MKL_NUM_THREADS` / `OPENBLAS_NUM_THREADS` / `NUMEXPR_NUM_THREADS` to 4 (job 24831, full 1300
-  studies). Result pending.
+  studies). Result: **4084s (68.1 min), matching the 16-CPU run's 4089s within 5 seconds** — the
+  ensemble pipeline is GPU-bound (3 members x 5 folds, mostly ViT-B), decode is serial anyway, so
+  Kaggle's ~4 CPUs vs. HPC's 16 makes no measurable difference. No trims needed.
+- 2026-09-11: **exp009 made self-resuming.** The prior single-session-per-check approach stalled
+  for 3 days (nobody manually resumed it between sessions) — fixed by chaining SLURM
+  `--dependency=afterany:<jobid>` array jobs so it drives itself to epoch 25 without a live
+  session: job 25033 (running, resumed from epoch 16) -> 25038 -> 25039 -> 25040, each depending
+  on the previous. `afterany` fires regardless of exit status, and `train.py`'s resume logic is
+  itself idempotent past completion (an already-finished fold's `for epoch in range(start_epoch,
+  epochs)` loop is empty, so it just re-runs the cheap final eval and re-writes an identical
+  `best.pt`) — so over-chaining costs a little wasted eval time per extra session, never
+  correctness. 3 extra sessions queued is generous margin over the ~1 more session actually
+  needed at the observed ~8 epochs/7h rate. Verified queued via `squeue`
+  (`25040_[0-4] ... DEPENDENCY=afterany:25039_*`, etc., all the way back to the running 25033).
+- 2026-09-11: **Kaggle-hardware pre-push fixes, round 2 — T4 x2 adaptation.** The pinned Kaggle
+  accelerator turned out to be T4 x2, not H100 — three real issues found and fixed:
+  1. **bf16 bug, ensemble notebook only.** `infer_core.run_study_inference[_tta]` default to
+     `autocast_dtype=torch.bfloat16` (correct for H100 HPC rehearsal, left unchanged) — the
+     ensemble notebook never overrode this, so it would have run bf16 autocast on a T4 (sm_75,
+     Turing, no native bf16 tensor cores) silently. The efficiency notebook already passed fp16
+     explicitly, so it was unaffected. Fixed: ensemble notebook now passes `AUTOCAST_DTYPE =
+     torch.float16` explicitly at every call site, matching the efficiency notebook.
+  2. **Multi-GPU member sharding, ensemble notebook.** Profiled H100 decode:model split per
+     notebook (both via a clean serial N=20/N=30-study measurement, `scripts/_profile_ensemble_dm.py`
+     and `scripts/profile_decode_vs_model.py`):
+     | notebook | decode | model | conclusion |
+     |---|---|---|---|
+     | ensemble (T=24, 3 members x 5 folds) | 67.9% (2.838s/study) | 32.1% (1.343s/study) | model-bound enough to be worth sharding |
+     | efficiency (T=16, 1 model x 5 folds) | 82.4% (0.715s/study) | 17.6% (0.153s/study) | decode dominates too much for a 2nd GPU to matter |
+
+     Ensemble members are now greedy-balanced across however many CUDA devices are visible
+     (`{exp006, exp005}` on one, `exp003` alone on the other — a ~4:3 relative-cost split),
+     driven from separate Python threads per member so different-device members' CUDA kernels
+     overlap (PyTorch releases the GIL during a CUDA call). Falls back to one device automatically
+     on a normal single-GPU HPC job. Efficiency notebook deliberately does NOT get this — the
+     model-inference slice it would speed up is too small relative to decode to be worth the
+     complexity (see cell-0 markdown in both notebooks for the full writeup).
+  3. **Decode/inference overlap, both notebooks.** Both previously decoded-then-inferred in
+     lockstep (efficiency: a whole chunk decoded, then the whole chunk inferred; ensemble: fully
+     serial per-study) — CPU idle during every inference, GPU idle during every decode. Added
+     `infer_core.prefetch_decode`, a generator that decodes study N+1 in a background thread pool
+     while study N runs on the GPU. **First version had a real bug**: it submitted all 1300 tasks
+     to the thread pool up front with only a bounded *hand-off queue* between the pool and the
+     consumer — that bounds how many completed-but-unconsumed items wait for the consumer, but
+     nothing bounded how far the pool itself could race ahead completing (and holding in memory)
+     tasks the consumer hadn't reached yet. Both full-1300 rehearsals (jobs 25046/25047) got
+     OOM-killed at the 32GB job memory limit as a result. Fixed by keeping a bounded *sliding
+     window* of in-flight futures (`window_size`, default 2x num_workers) instead — submit one
+     more only once the oldest is consumed — which caps buffered memory to a small fixed multiple
+     of the worker count regardless of test-set size. Re-ran clean (jobs 25048/25049, see below).
+     Verified bit-for-bit: the same fold count (4/5) run through the old serial efficiency path
+     and the new overlapped path produced **identical predictions, 0.0 mean/max abs diff** — the
+     overlap is a pure scheduling change, no math touched.
+  4. **Real H100 numbers, full 1300 studies, post-fix** (also confirms dual-GPU sharding and the
+     flat weight-dataset layout below both work correctly end-to-end, not just in isolation):
+     - Ensemble (2 GPUs, rung 0/3 members): **5200s (86.7 min)**, 0 prior fallbacks, 659 dual-flip,
+       output validated (1300 rows, 0 NaNs, values in [0.0083, 0.9996], 1300 unique UIDs).
+     - Efficiency (1 GPU, formula picked 4/5 folds): **447s (7.5 min)** — down from the prior
+       serial run's 763s at the same fold count, confirming the overlap's real throughput gain.
+       0 prior fallbacks, 663 dual-flip, output validated (1300 rows, 0 NaNs, values in
+       [0.0079, 0.9939], 1300 unique UIDs).
+  5. **T4 projection** (3.5x model-time multiplier per instruction, decode unchanged — CPU-bound,
+     already shown CPU-count-insensitive above), from the clean N=20/30 H100 decode:model split,
+     with decode/inference overlap meaning per-study throughput is bound by whichever of
+     decode/model is slower (not their sum):
+     - Ensemble, single T4: max(2.838, 1.343x3.5=4.700) = 4.700s/study -> **~102 min** for 1300.
+     - Ensemble, T4 x2 (~4:3 split): max(2.838, 4.700x4/7=2.686) = 2.838s/study -> **~62 min**
+       — dual-GPU flips the bottleneck from model to decode, the real reason it's worth doing here.
+     - Efficiency, single T4 (no dual-GPU, per the decision above): max(0.508, 0.153x3.5=0.535) =
+       0.535s/study -> **~11.6 min** — already close to its own achievable floor.
+     Caveat, stated plainly: the real H100 dual-GPU run (86.7 min) came in ~40% above its own
+     theoretical max(decode,model) floor (61.5 min) — real thread-scheduling/orchestration
+     overhead the idealized formula doesn't capture. Treat the T4 numbers above as optimistic
+     floors, not guarantees; the pending 3-sample Kaggle test is the real check. Either way, both
+     notebooks land far under the 8h safety cap regardless of which estimate is closer to truth.
+- 2026-09-11: **Kaggle dataset staging finalized.** Stripped `best.pt` to `ema`-only (the `model`
+  key is never loaded by any notebook) for all 4 weight experiments — exactly 50% smaller each,
+  as the model/ema-doubling finding predicted: exp003 4.72GB->2.36GB, exp005 1.20GB->0.60GB,
+  exp006 4.72GB->2.36GB, exp008 1.20GB->0.60GB (11.8GB -> 5.9GB total). Excluded exp008's leftover
+  `checkpoint.pt` files (478MB x5, resumability-only, dead weight for a finished experiment).
+  **Restaged weight datasets FLAT** (`fold0_best.pt` … `fold4_best.pt` at the dataset root, no
+  subdirectories) instead of `foldN/best.pt` — `kaggle datasets create`'s default `--dir-mode
+  skip` silently DROPS subdirectories entirely (confirmed via `kaggle datasets create --help`),
+  so uploading the old per-fold-subdirectory layout would need `--dir-mode zip`, and the
+  2026-09-08 Kaggle debugging arc already found that zip-based subdirectory upload does NOT
+  reliably preserve folder nesting on extraction (that's why the code package is found via
+  `rglob("__init__.py")` instead of a hardcoded path) — harmless for the code package's uniquely-
+  named `.py` files, but every fold's checkpoint is identically named `best.pt`, so a flattening
+  extraction could silently collide 5 files into 1. Both notebooks' loaders now check the flat
+  layout first, falling back to the subdirectory layout for robustness either way. All 5
+  `dataset-metadata.json` files staged (code already existed from the 2026-09-08 arc, `datasetId
+  11937869` — no longer resolves, confirmed via the API 403s logged in the prior entry; the 4
+  weight ones newly written, matching the same `id`/`title`/Apache-2.0 format).
+  **Correction to the prior entry's suggested command**: `kaggle datasets create -p <dir>` alone
+  (no `-r`) would silently upload NOTHING for any dataset with subdirectories — `--dir-mode skip`
+  ignores them, it doesn't error. The code dataset (has one `rsna_knee/` subdirectory) needs
+  `-r zip`; the weight datasets, now flat, don't need `-r` at all. Copy-pasteable block, in order:
+  ```bash
+  kaggle datasets create -p /shared/home/husnain.rasool/rsna-knee/kaggle_staging/code -r zip
+  kaggle datasets create -p /shared/home/husnain.rasool/rsna-knee/kaggle_staging/rsna-knee-exp003-weights
+  kaggle datasets create -p /shared/home/husnain.rasool/rsna-knee/kaggle_staging/rsna-knee-exp005-weights
+  kaggle datasets create -p /shared/home/husnain.rasool/rsna-knee/kaggle_staging/rsna-knee-exp006-weights
+  kaggle datasets create -p /shared/home/husnain.rasool/rsna-knee/kaggle_staging/rsna-knee-exp008-weights
+  ```
+- 2026-09-11: **Storage quota near its cap — found and partly cleared.** The per-user BeeGFS quota
+  is 400GB hard; usage was at 390.45GB (9.55GB headroom) when exp009's training log showed
+  `QUOTA GUARD: headroom 10.3GB < 15.0GB floor — SKIPPING checkpoint write` — the existing
+  quota-guard protection working as designed (skip, don't corrupt), but still worth clearing
+  since a skipped checkpoint means a crash would lose more recent progress than necessary. Found
+  and removed two safe, confirmed-redundant items: `artifacts/smoke_exp009/` (2.2GB, a leftover
+  from the very first exp009 smoke test, fully superseded) and `exp008`'s 5 `checkpoint.pt` files
+  (2.28GB, training confirmed complete at `epochs_completed=24`, `best.pt` already the record of
+  record). Freed 4.4GB (390.45GB -> 386.08GB used, ~13.9GB headroom) — did not chase further
+  since exp009 only needs ~4 more epochs to finish and this is enough margin for that. Not a
+  permanent fix: `data/` alone is 644GB (`du`, though this doesn't reconcile cleanly with the
+  391GB quota figure — likely some content there isn't quota-counted the same way, not
+  investigated further) — worth a proper audit before the next large training run, not urgent now.
 
 ## OOF↔LB gap analysis (template — fill in once probe #1 is scored)
 

@@ -33,7 +33,9 @@ time"):
 """
 from __future__ import annotations
 
+import itertools
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -134,6 +136,42 @@ def decode_one_for_pool_fast(task: tuple) -> tuple:
         return study_uid, slots, tag_sides, None
     except Exception as e:  # noqa: BLE001 - report the failure, don't crash the pool
         return study_uid, {}, [], f"{type(e).__name__}: {e}"
+
+
+def prefetch_decode(tasks: list, decode_fn, num_workers: int, window_size: int | None = None):
+    """Generator yielding decode_fn(task) results as they complete, decoding in a background
+    thread pool so CPU decode overlaps with the caller's GPU inference (2026-09-11 T4 adaptation
+    — decode-then-infer-in-lockstep, either per-study or per-chunk, leaves the GPU idle during
+    every decode and the CPU idle during every inference; a T4 makes the inference side slower
+    too, so hiding decode behind it matters more than it did against H100 timings).
+
+    Uses a BOUNDED sliding window of in-flight futures (`window_size`, default 2x num_workers),
+    not "submit everything up front" — found the hard way (2026-09-11: both notebooks' full-1300
+    rehearsals OOM-killed at 32GB) that submitting all 1300 tasks immediately lets the thread pool
+    race arbitrarily far ahead of a slower consumer (GPU inference here), completing and holding
+    hundreds of decoded volumes in memory at once with nothing to bound it — the pool's own
+    per-worker concurrency limit only bounds how many tasks are RUNNING, not how many COMPLETED
+    results are sitting around unconsumed. Keeping at most `window_size` futures in flight at any
+    time (submit one more only once the oldest is consumed) bounds buffered memory to a small,
+    fixed multiple of num_workers regardless of how many tasks there are in total, while still
+    submission-ordering the output (no caller-side re-sorting needed) and letting decode run
+    genuinely ahead of the consumer within that window.
+
+    decode_fn: infer_core.decode_one_for_pool or decode_one_for_pool_fast (or any picklable-style
+    callable taking one task tuple and returning a result tuple)."""
+    window = window_size or num_workers * 2
+    with ThreadPoolExecutor(max_workers=num_workers) as pool:
+        task_iter = iter(tasks)
+        pending: list = []
+        for t in itertools.islice(task_iter, window):
+            pending.append(pool.submit(decode_fn, t))
+        while pending:
+            fut = pending.pop(0)
+            result = fut.result()
+            next_task = next(task_iter, None)
+            if next_task is not None:
+                pending.append(pool.submit(decode_fn, next_task))
+            yield result
 
 
 def decode_study_slots(
