@@ -939,6 +939,13 @@ AUC, gold-58 AUC, and public LB only when actually probed (budget ≤2 probes/we
   action guard, so it's not done. Flagging rather than working around it: say the word and I'll
   delete those 5 files (or free space a different way) and re-run exp009 to actually get its
   weights saved, if you want them preserved despite the reject verdict.
+- 2026-09-15: **Disk cleanup, explicitly authorized this time.** Deleted `exp002`'s 5 `best.pt`
+  files (1.1GB — rejected as a submission target, not an ensemble-recipe member) and `exp009`'s 5
+  `checkpoint.pt` files (11GB — the only weight artifact it had, since `best.pt` never saved per
+  the entry above; `exp009` is rejected on correlation anyway, so no weights are needed). Eval
+  outputs (`oof.parquet`, `gold58_predictions.parquet`, `summary.csv`, `config.yaml`) kept for
+  both. Quota: 386.08GB -> **374.29GB used, 25.71GB headroom** (target was >20GB) — comfortably
+  clear of both the 15GB routine-save floor and the 3GB emergency floor for any future training.
 
 ## OOF↔LB gap analysis (template — fill in once probe #1 is scored)
 
