@@ -907,8 +907,38 @@ AUC, gold-58 AUC, and public LB only when actually probed (budget ≤2 probes/we
   record). Freed 4.4GB (390.45GB -> 386.08GB used, ~13.9GB headroom) — did not chase further
   since exp009 only needs ~4 more epochs to finish and this is enough margin for that. Not a
   permanent fix: `data/` alone is 644GB (`du`, though this doesn't reconcile cleanly with the
-  391GB quota figure — likely some content there isn't quota-counted the same way, not
-  investigated further) — worth a proper audit before the next large training run, not urgent now.
+  391GB quota figure — resolved below: `data/raw` (531GB) + `data/cache` (113GB) sit outside this
+  user's personal quota accounting entirely, evidently a shared/group-mounted pool — nothing
+  reclaimable there for this specific problem).
+- 2026-09-14/15: **exp009 verdict — DOES NOT CLEAR THE BAR.** All 5 folds completed (chain ran
+  25033 -> 25038 -> 25039 -> 25040 exactly as designed, no live session needed). OOF macro-AUC vs
+  `labels_v2_final` **0.8652** (bar >=0.855 — **passes**), gold-58 tripwire 0.8809, native
+  training-time metric (vs `labels_v3_candidate`) 0.9446. Mean per-label OOF-prediction
+  correlation with exp006 **0.9296** (bar <0.90 — **fails**, per-label range 0.86-0.96, nothing
+  meaningfully decorrelated). **Verdict: no greedy re-selection** — ConvNeXt-V2-Base clears the
+  accuracy bar but isn't diverse enough from the DINOv2 ViT members to be worth adding; same
+  study-level errors, not independent ones. Full per-label breakdown:
+  `artifacts/exp009_acceptance_report.csv` (`scripts/eval_exp009_acceptance.py`, mirrors
+  `eval_exp005_acceptance.py`'s pattern).
+  **Infrastructure problem found in the process, disclosed even though it turned out not to
+  matter for this verdict**: the storage-quota headroom freed in the entry above (13.9GB) was
+  still under the 15GB *routine-save* floor `safe_torch_save` gates on (separate from the lower
+  3GB emergency-save floor) — every fold's FINAL `best.pt` write (and every `checkpoint.pt` write
+  in sessions 25038-25040) was silently skipped, logged but easy to miss
+  (`QUOTA GUARD: starting with headroom 14.674GB, already below the 15GB routine-save floor ...
+  no weights will be deployable unless quota is freed before this run finishes`). The eval
+  artifacts (`oof.parquet`, `gold58_predictions.parquet`, `summary.csv`) still saved (smaller,
+  under the emergency floor) — that's how this verdict was computable at all — but **exp009 has
+  no usable checkpoint on disk**, only a stale `checkpoint.pt` per fold at epoch 23/25 (one epoch
+  short). Moot for the ensemble decision (rejected on correlation regardless), but real: freeing
+  more headroom and resuming once more (only 1 epoch left to redo per fold, cheap) is what it'd
+  take to get a real `best.pt` if this backbone is ever revisited. Found one more safe-looking
+  reclaim candidate — `exp002_dinov2s_slot_v2labels`'s 5 `best.pt` files (1.145GB): not an
+  ensemble-recipe member, and explicitly dropped as a submission target ("skipping the stale
+  exp002/v7 probe entirely") — but deleting model weights tripped this session's own irreversible-
+  action guard, so it's not done. Flagging rather than working around it: say the word and I'll
+  delete those 5 files (or free space a different way) and re-run exp009 to actually get its
+  weights saved, if you want them preserved despite the reject verdict.
 
 ## OOF↔LB gap analysis (template — fill in once probe #1 is scored)
 
