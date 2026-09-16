@@ -34,6 +34,8 @@ time"):
 from __future__ import annotations
 
 import itertools
+import queue
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -145,33 +147,63 @@ def prefetch_decode(tasks: list, decode_fn, num_workers: int, window_size: int |
     every decode and the CPU idle during every inference; a T4 makes the inference side slower
     too, so hiding decode behind it matters more than it did against H100 timings).
 
-    Uses a BOUNDED sliding window of in-flight futures (`window_size`, default 2x num_workers),
-    not "submit everything up front" — found the hard way (2026-09-11: both notebooks' full-1300
-    rehearsals OOM-killed at 32GB) that submitting all 1300 tasks immediately lets the thread pool
-    race arbitrarily far ahead of a slower consumer (GPU inference here), completing and holding
-    hundreds of decoded volumes in memory at once with nothing to bound it — the pool's own
-    per-worker concurrency limit only bounds how many tasks are RUNNING, not how many COMPLETED
-    results are sitting around unconsumed. Keeping at most `window_size` futures in flight at any
-    time (submit one more only once the oldest is consumed) bounds buffered memory to a small,
-    fixed multiple of num_workers regardless of how many tasks there are in total, while still
-    submission-ordering the output (no caller-side re-sorting needed) and letting decode run
-    genuinely ahead of the consumer within that window.
+    Backpressure (2026-09-16 Kaggle OOM fix): the completed-but-unconsumed result buffer is a
+    STRICTLY bounded `queue.Queue(maxsize<=2)`, deliberately decoupled from `num_workers`. The
+    original fix here (2026-09-11, after both notebooks' full-1300 HPC rehearsals OOM-killed at
+    32GB submitting all tasks up front) used a sliding window sized `num_workers * 2` — correct
+    reasoning (bound in-flight results, don't submit everything at once) but the bound still
+    scaled with num_workers, and DECODE_WORKERS is derived from `os.cpu_count()` in both
+    notebooks. Kaggle's reported CPU count made that window large enough to let the feeder race
+    tens of studies ahead of a lagging GPU consumer and re-created the same class of OOM ("Notebook
+    Out of Memory") the window was supposed to prevent, just realized at a different scale. A
+    single feeder thread still uses a `ThreadPoolExecutor(num_workers)` internally for decode
+    throughput (CPU-bound work benefits from running several studies' decode concurrently), but the
+    HANDOFF to the consumer is capped at `window_size` (default 2, hard-clamped to <=2 regardless
+    of what's passed) — `queue.put()` blocks once that many completed results are sitting unconsumed,
+    which is real backpressure: the feeder cannot get more than `window_size` decoded studies ahead
+    of whatever is pulling from this generator, however fast decode runs relative to inference.
 
     decode_fn: infer_core.decode_one_for_pool or decode_one_for_pool_fast (or any picklable-style
     callable taking one task tuple and returning a result tuple)."""
-    window = window_size or num_workers * 2
-    with ThreadPoolExecutor(max_workers=num_workers) as pool:
-        task_iter = iter(tasks)
-        pending: list = []
-        for t in itertools.islice(task_iter, window):
-            pending.append(pool.submit(decode_fn, t))
-        while pending:
-            fut = pending.pop(0)
-            result = fut.result()
-            next_task = next(task_iter, None)
-            if next_task is not None:
-                pending.append(pool.submit(decode_fn, next_task))
-            yield result
+    window = max(1, min(window_size or 2, 2))
+    result_queue: queue.Queue = queue.Queue(maxsize=window)
+    _SENTINEL = object()
+    _error: list = []
+
+    def _feeder() -> None:
+        try:
+            with ThreadPoolExecutor(max_workers=num_workers) as pool:
+                task_iter = iter(tasks)
+                pending: list = []
+                for t in itertools.islice(task_iter, num_workers):
+                    pending.append(pool.submit(decode_fn, t))
+                while pending:
+                    fut = pending.pop(0)
+                    result = fut.result()
+                    del fut
+                    next_task = next(task_iter, None)
+                    if next_task is not None:
+                        pending.append(pool.submit(decode_fn, next_task))
+                    result_queue.put(result)  # blocks here once `window` results are unconsumed
+                    del result
+        except Exception as e:  # noqa: BLE001 - surface feeder-thread failures to the consumer
+            _error.append(e)
+        finally:
+            result_queue.put(_SENTINEL)
+
+    feeder_thread = threading.Thread(target=_feeder, daemon=True)
+    feeder_thread.start()
+    try:
+        while True:
+            item = result_queue.get()
+            if item is _SENTINEL:
+                if _error:
+                    raise _error[0]
+                break
+            yield item
+            del item  # drop this generator frame's reference as soon as the consumer resumes
+    finally:
+        feeder_thread.join(timeout=0)  # best-effort; feeder is a daemon thread, won't block exit
 
 
 def decode_study_slots(
@@ -234,7 +266,7 @@ def build_volumes(slots: dict[int, torch.Tensor], T: int, out_size: int, flip: b
     return volumes, mask
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def _run_orientation(
     slots: dict[int, torch.Tensor], flip: bool, models: list[torch.nn.Module],
     device: str, T: int, out_size: int, autocast_dtype=torch.bfloat16,
