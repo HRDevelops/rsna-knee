@@ -984,3 +984,51 @@ the fact):**
   - A negative gap (LB > OOF) is not automatically "good news" — re-run the same checklist; it can
     indicate a fold-construction issue in the other direction (OOF harder than it should be) just
     as easily as a real generalization win.
+
+## OOF↔LB gap analysis — probe #1 RESULT (2026-09-17)
+
+Filling in the template above per its own instruction. Probe #1 (`submit-ensemble.ipynb`, T4 x2)
+completed on real Kaggle hardware with zero OOM/timeout issues (the 2026-09-16 backpressure/
+`inference_mode`/shallow-`_find_dir` fixes held).
+
+| | value |
+|---|---|
+| OOF macro-AUC (reference, pre-registered) | 0.8744 |
+| Public LB macro-AUC | 0.8930 |
+| Gap (OOF − LB) | **−0.0186** |
+| Trust threshold | < 0.02 |
+| Gold-58 macro-AUC for this run | not available — no gold labels at Kaggle test time (see below) |
+
+Produced via `python scripts/eval_oof_lb_gap.py --lb-score 0.893`
+(`artifacts/oof_lb_gap_report.md`).
+
+**Verdict: TRUSTWORTHY — |gap| = 0.0186 < 0.02.** Per the pre-registered rule, this does NOT
+trigger the investigation gate. Proceeding to probe #2 (efficiency notebook) — no label-engine or
+fold-construction changes triggered by this result alone.
+
+**Interpretation, since the user asked for one despite the gap clearing the bar** (direction is
+negative — LB beats OOF — which the rule above explicitly says isn't automatically good news):
+1. **Site/template leakage** would inflate OOF relative to LB (push the gap *positive*) — the
+   opposite of what we observed. Argues against a fold-construction leak being the explanation.
+2. **Prevalence shift** (CLAUDE.md §3): AUC is prevalence-invariant per label in theory; no
+   mechanism identified that would specifically explain a negative-direction shift.
+3. **Label-engine ceiling**: can't be checked directly for this run — gold-58 has no test-time
+   equivalent (test studies aren't the gold-58 studies, and true test labels are never exposed to
+   us). The gold-58 AUC from HPC eval measures a disjoint population, not this submission.
+4. **Most parsimonious reading**: our OOF proxy target (`labels_v2_final`, LLM/report-derived,
+   ~18% systematic disagreement with true image-reviewed criteria per CLAUDE.md §2) is a noisier
+   target than the true hidden-test labels. A model that learned real image pathology features can
+   plausibly score higher against the cleaner true labels than against our own noisier
+   training/validation proxy — consistent with (not proof of) the weak-supervision approach working
+   as intended, not a red flag.
+5. **Small-sample noise**: the public LB is a subset of the ~1,300 test studies (split size not
+   disclosed by Kaggle); some of the 0.0186 swing is plausibly just per-label AUC variance on a
+   smaller population, either direction.
+
+**Note on the shared local `submission.csv`**: the copy shared alongside this result
+(`C:\Users\husna\Downloads\submission.csv`) contains only 3 data rows, not ~1,300. Since
+`submit-ensemble.ipynb` cell 7 asserts `len(sub_df) == len(test_df)` before ever writing the file,
+and Kaggle's scorer would not produce a meaningful macro-AUC off a handful of rows, the file that
+was actually submitted almost certainly had the full row count — this local copy is most likely a
+truncated download or a manually-saved excerpt, not the submitted file itself. Flagged for
+awareness; does not affect the gap analysis above, which uses the reported LB score directly.
