@@ -303,7 +303,12 @@ def main() -> None:
         model = Slot3DModel(num_targets=cfg["model"]["num_targets"]).to(device)
     else:
         from rsna_knee.model import SlotModel, get_param_groups as get_param_groups_fn
-        model = SlotModel(cfg["model"]["backbone"], num_targets=cfg["model"]["num_targets"]).to(device)
+        # target_slot_prior: optional {target_idx: [slot_idx, ...]} anatomy-aware init bias
+        # (2026-09-17 ACL workstream) -- config keys/values are plain ints/lists from YAML, dict
+        # keys arrive as ints already since YAML mapping keys aren't quoted in our configs.
+        target_slot_prior = cfg["model"].get("target_slot_prior")
+        model = SlotModel(cfg["model"]["backbone"], num_targets=cfg["model"]["num_targets"],
+                           target_slot_prior=target_slot_prior).to(device)
     param_groups = get_param_groups_fn(model, cfg["train"]["lr"], cfg["train"]["backbone_lr_mult"],
                                         cfg["train"]["weight_decay"])
     optimizer = torch.optim.AdamW(param_groups)

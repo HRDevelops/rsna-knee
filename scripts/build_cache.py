@@ -97,10 +97,20 @@ def main() -> None:
     parser.add_argument("--spacing", type=float, default=0.3)
     parser.add_argument("--size", type=int, default=384)
     parser.add_argument("--dtype", type=str, default="uint8", choices=["uint8"])
+    parser.add_argument("--study-list", type=Path, default=None,
+                         help="Optional file, one study_uid per line -- restrict to this subset "
+                              "(2026-09-17, quota-cheap resolution ablation: build a cache for a "
+                              "small subset instead of the full ~4400-study corpus). Default: "
+                              "every study under --raw/train_series, unchanged behavior.")
     args = parser.parse_args()
 
     train_series_dir = args.raw / "train_series"
     study_dirs = sorted(p for p in train_series_dir.iterdir() if p.is_dir())
+    if args.study_list is not None:
+        wanted = {line.strip() for line in args.study_list.read_text().splitlines() if line.strip()}
+        study_dirs = [d for d in study_dirs if d.name in wanted]
+        print(f"--study-list restricted to {len(study_dirs)}/{len(wanted)} requested studies found "
+              f"under {train_series_dir}.", file=sys.stderr)
     my_studies = [d for i, d in enumerate(study_dirs) if i % args.num_shards == args.shard]
     print(f"Shard {args.shard}/{args.num_shards}: {len(my_studies)} studies "
           f"(of {len(study_dirs)} total).", file=sys.stderr)

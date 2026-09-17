@@ -12,7 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""PREP ONLY — not run yet, exp011 (MRNet auxiliary pretraining), 2026-09-17.
+"""DEAD — exp011 (MRNet auxiliary pretraining) DROPPED, 2026-09-17. Do not run this script or
+resurrect this plan without re-confirming the license problem below is actually resolved (it
+wasn't — this was dropped specifically because of it, not superseded by something better).
+kept in git for the record only (the license research below took real effort to establish, and
+KneeMRI is now being evaluated as a licensing-clean replacement — see the corresponding
+docs/EXPERIMENTS.md entry).
+
+--- ORIGINAL STATUS, PREP ONLY — not run yet, exp011 (MRNet auxiliary pretraining), 2026-09-17.
 
 ============================================================================
 LICENSE STATUS: NOT CONFIRMED ELIGIBLE. Do not download or use MRNet data
@@ -154,6 +161,12 @@ def build_mrnet_cache(mrnet_root: Path, split: str, out_dir: Path) -> pd.DataFra
 
 
 def main() -> None:
+    raise SystemExit(
+        "exp011/MRNet was DROPPED 2026-09-17 (license: personal/non-commercial-research-only, "
+        "no-link-sharing Research Use Agreement -- incompatible with prize eligibility and the "
+        "winners'-obligation public-weights requirement). This script is kept for the record, "
+        "not for use. See docs/EXPERIMENTS.md's 2026-09-17 entries."
+    )
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--mrnet-root", type=Path, required=True,
                          help="Local path to an extracted MRNet-v1.0 release (train/, valid/, train-*.csv)")

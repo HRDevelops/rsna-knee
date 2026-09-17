@@ -1,0 +1,64 @@
+# exp012: anatomy-aware ACL head, ACL workstream item 2, 2026-09-17. Identical to exp006 in every
+# respect except one new field (model.target_slot_prior) -- isolates the init-bias change as the
+# ONLY variable, same discipline as every other single-variable ablation in this project.
+#
+# ACL's per-target attention query (target_queries[0], TARGET_COLUMNS.index("ACL")==0) is
+# initialized biased toward the mean of the sagittal slot identity embeddings (slot indices 0, 1 =
+# Sagittal_FS, Sagittal_nonFS, per dataset.SLOT_NAMES) instead of unbiased small-random noise --
+# the clinically relevant plane for ACL. This does NOT add a new mechanism (the shared
+# nn.MultiheadAttention target-pooling head can already learn arbitrary per-target slot weighting
+# purely from gradient descent -- confirmed by reading model.py before touching it) -- it's an
+# initialization prior only, a same-order-of-magnitude nudge (matched to the query row's own
+# initial norm) that training can move away from if the data disagrees. Smoke-tested
+# (scripts/... one-off, not committed) to confirm only ACL's row differs from exp006's init and
+# every other target row is byte-identical.
+#
+# Motivation (docs/EXPERIMENTS.md 2026-09-17 ACL error analysis): gold-58 shows the image ensemble
+# already discriminates ACL about as well as the report engine (~0.988 AUC either way, essentially
+# tied) -- so this is a bet that a better anatomical prior helps the model reach that ceiling more
+# reliably/consistently on the noisier full-population signal, not a claim that ACL is
+# architecturally unreachable today. ACL gain must not cost macro -- report per-label deltas vs
+# exp006, not just the ACL number, before accepting.
+experiment: exp012_dinov2b_slot_v3labels_acl_prior
+seed: 42
+data:
+  cache_dir: ${RSNA_ROOT}/data/cache
+  labels: ${RSNA_ROOT}/artifacts/labels/labels_v3_candidate.parquet
+  folds: ${RSNA_ROOT}/artifacts/folds.parquet   # SAME folds as exp002/003/005/006 — not rebuilt
+  gold_reference: ${RSNA_ROOT}/artifacts/gold58.parquet   # unused — gold truth loaded directly from data/raw/train.csv
+  slices_per_series: 24
+  image_size: 384
+  slots: [Sagittal_FS, Sagittal_nonFS, Coronal_FS, Coronal_nonFS, Axial_FS, Axial_nonFS]
+  laterality_normalize: true
+model:
+  backbone: vit_base_patch14_dinov2.lvd142m
+  slice_agg: transformer
+  study_head: cross_slot_transformer
+  num_targets: 12
+  target_slot_prior:
+    0: [0, 1]   # ACL (TARGET_COLUMNS index 0) -> Sagittal_FS, Sagittal_nonFS (SLOT_NAMES indices 0,1)
+train:
+  epochs: 25
+  batch_size_studies: 8
+  lr: 1.0e-4
+  backbone_lr_mult: 0.1
+  weight_decay: 0.05
+  scheduler: cosine
+  warmup_epochs: 5
+  precision: bf16
+  ema: 0.999
+  loss: bce_soft
+  label_confidence_weighting: true
+aug:
+  rotate_deg: 10
+  scale: 0.1
+  translate: 0.05
+  intensity_jitter: 0.1
+  coarse_dropout: true
+  laterality_swap_prob: 0.3
+  fluid_flag_corrupt_prob: 0.05
+  vertical_flip: false
+eval:
+  metric: macro_auc
+  report_per_label: true
+  save_oof: true

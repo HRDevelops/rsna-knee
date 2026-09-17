@@ -1,0 +1,48 @@
+# exp013: 384px baseline for the quota-cheap resolution test (ACL workstream item 4, 2026-09-17).
+# NOT a reproduction of exp006 fold 0 (different, much smaller training set -- 320 train studies
+# vs exp006's real ~3470 -- so this number is only comparable to exp014's 448px counterpart on the
+# SAME subset, never to exp006 directly). Uses the EXISTING main 384px/0.3mm cache (data/cache),
+# just filtered to a 400-study subset (folds field below) -- no new cache needed for this half.
+# See exp014 (448px) and docs/EXPERIMENTS.md's exp010 entry for why a genuine resolution increase
+# needs a real cache rebuild rather than a config-only image_size change.
+experiment: exp013_dinov2b_slot_v3labels_subset384_baseline
+seed: 42
+data:
+  cache_dir: ${RSNA_ROOT}/data/cache
+  labels: ${RSNA_ROOT}/artifacts/labels/labels_v3_candidate.parquet
+  folds: ${RSNA_ROOT}/artifacts/acl_448_subset_folds.parquet   # 400-study subset: 320 train (folds 1-4) / 80 val (fold 0)
+  gold_reference: ${RSNA_ROOT}/artifacts/gold58.parquet   # unused — gold truth loaded directly from data/raw/train.csv
+  slices_per_series: 24
+  image_size: 384
+  slots: [Sagittal_FS, Sagittal_nonFS, Coronal_FS, Coronal_nonFS, Axial_FS, Axial_nonFS]
+  laterality_normalize: true
+model:
+  backbone: vit_base_patch14_dinov2.lvd142m
+  slice_agg: transformer
+  study_head: cross_slot_transformer
+  num_targets: 12
+train:
+  epochs: 25
+  batch_size_studies: 8
+  lr: 1.0e-4
+  backbone_lr_mult: 0.1
+  weight_decay: 0.05
+  scheduler: cosine
+  warmup_epochs: 5
+  precision: bf16
+  ema: 0.999
+  loss: bce_soft
+  label_confidence_weighting: true
+aug:
+  rotate_deg: 10
+  scale: 0.1
+  translate: 0.05
+  intensity_jitter: 0.1
+  coarse_dropout: true
+  laterality_swap_prob: 0.3
+  fluid_flag_corrupt_prob: 0.05
+  vertical_flip: false
+eval:
+  metric: macro_auc
+  report_per_label: true
+  save_oof: true

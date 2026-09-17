@@ -26,6 +26,7 @@ from __future__ import annotations
 import timm
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 NUM_SLOTS = 6
 SMALL_GAIN_STD = 0.02
@@ -60,6 +61,7 @@ class SlotModel(nn.Module):
         slot_layers: int = 2,
         slot_heads: int = 4,
         pretrained: bool = True,
+        target_slot_prior: dict[int, list[int]] | None = None,
     ):
         super().__init__()
         # dynamic_img_size=True: DINOv2 timm configs default to a fixed 518x518 img_size and
@@ -106,6 +108,24 @@ class SlotModel(nn.Module):
         _small_gain_init_encoder(self.slot_transformer)
 
         self.target_queries = nn.Parameter(torch.randn(num_targets, D) * SMALL_GAIN_STD)
+        # Anatomy-aware init (2026-09-17, ACL workstream item 2): the per-target attention pooling
+        # mechanism below can ALREADY learn arbitrary slot-weighting per target purely from
+        # gradient descent (each target_query independently attends over the 6 slot keys) -- this
+        # is not a new mechanism, only an optional INITIALIZATION bias for whichever targets get a
+        # prior, nudging that target's query toward the slot identity embeddings of the
+        # anatomically relevant slot(s) at step 0 instead of starting from unbiased small-random
+        # noise. Every existing config omits target_slot_prior (defaults to None) and is therefore
+        # byte-for-byte unaffected. Blended in as a same-order-of-magnitude nudge (matched to the
+        # query row's own initial norm), not an override -- training can still move away from it
+        # if the data disagrees.
+        if target_slot_prior:
+            with torch.no_grad():
+                for target_idx, slot_indices in target_slot_prior.items():
+                    prior_dir = F.normalize(
+                        self.slot_embed.weight.data[slot_indices].mean(dim=0), dim=0
+                    )
+                    row_norm = self.target_queries.data[target_idx].norm()
+                    self.target_queries.data[target_idx] += prior_dir * row_norm
         self.target_attn = nn.MultiheadAttention(D, slot_heads, batch_first=True)
         _small_gain_init_attn(self.target_attn)
         self.head = nn.Linear(D, 1)

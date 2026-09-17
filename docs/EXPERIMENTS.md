@@ -1239,3 +1239,117 @@ commercial-use question. **Recommendation, not a decision made here: the user sh
 verify against the actual RSNA competition's external-data rules and the full MRNet Research Use
 Agreement text before any download happens under this project.** No data downloaded, no
 eligibility claimed.
+
+## exp007 killed, ACL dedicated workstream launched (2026-09-17)
+
+Three decisions on the diagnostic above: kill exp007 (131 GPU-hours not defensible against a
+10-point ACL hole), drop exp011/MRNet, make ACL a dedicated workstream.
+
+- **exp007 killed.** `scancel --name=rsna_train --user=husnain.rasool` — **this also killed
+  exp010 by accident** (name-matches every job from `train.sbatch`, not just exp007's). Caught
+  immediately: neither exp010 nor exp007 had written a `checkpoint.pt` yet (both only minutes into
+  epoch 0), so nothing was actually lost — exp010 relaunched clean (job 25344, was 25325).
+  exp007's chain (25331/25336-25339) confirmed fully cancelled, quota unaffected (it hadn't
+  written anything either).
+- **exp011/MRNet marked dead**, not deleted (kept for the record — the license research took real
+  effort and is the reason KneeMRI is now the thing being checked instead). `scripts/prep_mrnet.py`
+  now `raise SystemExit`s immediately if run, with the docstring's status line changed to DEAD.
+
+### ACL error analysis (`scripts/analyze_acl_errors.py`, `artifacts/acl_error_report.md`)
+
+First pass had a bug worth recording: gold-58 is excluded from every fold's train/val split by
+design (CLAUDE.md §7), so it can never appear in `oof.parquet` — an initial version of this script
+joined against `oof.parquet` and silently got 0 gold-58 rows, producing NaN for the "true
+out-of-sample" correlation check. Fixed by loading `gold58_predictions.parquet` (every fold's
+model predicts all 58 gold studies) separately.
+
+**The corrected gold-58 comparison changes the read on ACL, and matters for what to do next**:
+
+| | AUC vs. true gold-58 label | corr vs. true gold-58 label |
+|---|---|---|
+| Report label (`labels_v2_final`, LOO-calibrated) | 0.9890 | 0.9024 |
+| Image ensemble (fold-ensembled, out-of-sample) | 0.9877 | 0.8949 |
+
+**Essentially tied, both near-ceiling.** The v3 blend's report-heavy weight for ACL (w_image=0.1)
+was optimizing a thin, likely noise-level margin on n=58 (CLAUDE.md's own "wide CIs" caveat) — not
+evidence of a large image-model blind spot. This means the −0.097 gap vs. Qiu et al. (measured
+against our noisy 4349-study soft-label OOF target, 0.8522, not the clean gold-58 signal) is
+plausibly INFLATED by proxy-label noise in the eval target itself, not purely a real
+model/architecture deficit vs. their large, cleanly-labeled test set. **Doesn't deprioritize ACL**
+— 0.8522 remains our lowest comparable label and the true number is unknowable without more clean
+labels — but it argues against expecting an architecture change alone to close most of the gap,
+and for treating ACL-specific label/target quality on the broader population as a live hypothesis,
+not something gold-58 alone can rule out.
+
+**Top-40 highest-error non-gold ACL cases, aggregate pattern vs. the 4349-study population:**
+sagittal is present in 100% of BOTH groups (not a differentiator — ACL is reliably imaged, not a
+data-availability problem); side-unresolved is meaningfully overrepresented (50-60% of top errors
+vs. 34.4% baseline, ~1.5-1.75x) — plausible mechanism: the "run both orientations and average"
+fallback for unresolved-side studies may specifically hurt a spatially-localized, non-paired
+finding like ACL more than it hurts labels this project already treats as mirror-symmetric, though
+this is a hypothesis flagged here, not cross-checked against another label's error list this
+session; language distribution shows NO clear driver (English is if anything slightly
+OVERrepresented in errors, 52% vs. 39% baseline — the opposite of what a translation-quality theory
+would predict).
+
+### exp012 — anatomy-aware ACL head, launched
+
+`src/rsna_knee/model.py`: added an optional `target_slot_prior: dict[int, list[int]] | None`
+constructor arg to `SlotModel` — NOT a new mechanism (the existing per-target
+`nn.MultiheadAttention` pooling can already learn arbitrary slot-weighting per target purely from
+gradient descent, confirmed by reading the forward pass before touching it) — only an
+INITIALIZATION bias, nudging a target's query toward the mean of specified slot identity
+embeddings instead of unbiased small-random noise, scaled to match the query row's own initial
+norm (a nudge, not an override). Defaults to `None`; every existing config is unaffected.
+Smoke-tested locally (construction + forward pass, both with and without the prior): confirmed
+only the biased target's query row differs at all from an identical-seed unbiased model, every
+other row byte-identical, forward pass produces finite output either way.
+
+`configs/exp012_dinov2b_slot_v3labels_acl_prior.yaml`: identical to exp006 except
+`model.target_slot_prior: {0: [0, 1]}` (ACL -> Sagittal_FS, Sagittal_nonFS). Launched as a 5-fold
+array job (job 25353). Report per-label deltas vs. exp006 when it lands — ACL gain must not cost
+macro.
+
+### exp011/KneeMRI — license NOT confirmed, stopped per the user's own pre-registered condition
+
+Checked (2026-09-17): the dataset's original host page
+(riteh.uniri.hr/~istajduh/projects/kneeMRI/) 404s, the paper's own PDF link 404s, and no
+authoritative Creative Commons license text was found via search despite several query angles — a
+Kaggle mirror exists (`sohaibanwaar1203/kneemridataset`) but a third-party mirror existing doesn't
+establish the original license terms, and its page wasn't renderable to check. **This is exactly
+the "ambiguous — stop and tell me, don't download" case the user pre-registered.** No prep script
+written, no download attempted. If the user finds the actual license text (or the host page comes
+back), it's worth rechecking — 917 sagittal PD-weighted exams with ACL grades would be a strong
+match for ACL-focused auxiliary pretraining if the licensing genuinely is clean.
+
+### exp013/exp014 — quota-cheap 448px test, launched (corrected scope from the original ask)
+
+The original ask ("~880 studies, ~30GB") doesn't quite work as specified: (1) 30GB exceeds the
+25.71GB free quota at the time, and (2) "fold 0's studies" (~880) is fold 0's VALIDATION set size
+— training a model on only its own validation studies isn't a meaningful comparison to exp006's
+real fold-0 baseline (which trains on the ~3470 OTHER studies). Reinterpreted as a smaller,
+self-contained sanity check instead: a fresh 400-study subset (320 "train" from folds 1-4, 80
+"val" from fold 0, sampled from the existing `folds.parquet` so report-cluster grouping is
+preserved) — a valid, isolated 384-vs-448 comparison on ITS OWN scale, not a number directly
+comparable to exp006's real fold-0 OOF (different, much smaller training set).
+
+- `scripts/build_cache.py`: added `--study-list <file>` (default None, unchanged behavior) to
+  restrict a cache build to a study subset instead of the full corpus.
+- `slurm/acl_448_cache_build.sbatch`: builds `data/cache_448_subset/` at ~0.2571mm/px, 448px (same
+  ~115mm FOV as the main 0.3mm/px/384px cache, genuinely finer spacing — not an upsample) for just
+  the 400-study subset. ~14GB, comfortably inside the 25.59GB free quota at launch time (checked
+  immediately before submitting). Job 25357, 4 shards, running on the ZEN4 CPU partition.
+- `configs/exp013_..._subset384_baseline.yaml`: 384px, using the EXISTING main cache (no rebuild
+  needed for this half) filtered to the subset. Job 25358.
+- `configs/exp014_..._subset448_test.yaml`: 448px, using the new subset cache, `grad_accum_steps:
+  2` (batch_size_studies halved to 4, matching exp010's fallback mechanism) to keep the effective
+  batch at 8. Job 25359, `--dependency=afterok:25357` so it only starts once the cache build
+  actually finishes successfully.
+- **Delete `data/cache_448_subset/` once this comparison is read out** — it's a one-off diagnostic
+  cache, not a permanent second variant, and 14GB is real headroom this project can't spare
+  indefinitely.
+
+### exp010 (T=32) — still running, no result yet
+
+Job 25344 (relaunched after the accidental kill above), all 5 folds active. Per-label deltas vs.
+exp006 — ACL especially — to be reported once it lands.
