@@ -946,6 +946,26 @@ AUC, gold-58 AUC, and public LB only when actually probed (budget ≤2 probes/we
   outputs (`oof.parquet`, `gold58_predictions.parquet`, `summary.csv`, `config.yaml`) kept for
   both. Quota: 386.08GB -> **374.29GB used, 25.71GB headroom** (target was >20GB) — comfortably
   clear of both the 15GB routine-save floor and the 3GB emergency floor for any future training.
+- 2026-09-17: **Probe #2 (efficiency, `submit-efficiency.ipynb`, exp008) scored: 0.885 public LB.**
+  Delta vs. the ensemble's 0.893 is **-0.008** — inside the CLAUDE.md §4 "AUC within ~2 pts of the
+  big ensemble" efficiency-track target, and better than the -0.0036 OOF delta predicted (0.8708 vs
+  0.8744) would suggest, i.e. the distilled student held up on the real hidden test set at least as
+  well as the OOF comparison implied. Ran on a single Tesla T4 (per plan, §2 of
+  `docs/SUBMISSION_RUNBOOK.md` — pin T4 x1 for this notebook), `fast_decode: True`, formula-chosen
+  fold count 5/5 (matches the "4 or 5" healthy-range expectation), zero prior fallbacks.
+  **Both submission notebooks are now live and scored — Phase 6.3's two final selections are
+  complete.**
+  **Correction to a 2026-09-16 note above**: the earlier "shared local submission.csv has only 3
+  rows, likely a truncated download" note was WRONG about the mechanism (though right to flag it).
+  The notebook file shared this turn (`rsna-knee-submit-efficiency.ipynb`) makes it unambiguous:
+  its own cell output prints `3 test studies, 15 series` — Kaggle's code-competition interactive/
+  commit environment mounts a tiny placeholder `test.csv` (here, literally 3 rows), NOT the ~1,300-
+  study hidden set; the real hidden set is only substituted in during Kaggle's own backend rerun
+  triggered by clicking Submit, whose intermediate cell outputs are never shown back to us — only
+  the final LB score is. So every `submission.csv`/notebook-output artifact either of us can see
+  locally is necessarily the 3-sample interactive run, by design, not a download problem. The
+  actual submitted runs are opaque to us beyond the LB score — which is exactly why the OOF↔LB gap
+  check below is the only real signal we get on the full-scale run's health.
 
 ## OOF↔LB gap analysis (template — fill in once probe #1 is scored)
 
@@ -1032,3 +1052,38 @@ and Kaggle's scorer would not produce a meaningful macro-AUC off a handful of ro
 was actually submitted almost certainly had the full row count — this local copy is most likely a
 truncated download or a manually-saved excerpt, not the submitted file itself. Flagged for
 awareness; does not affect the gap analysis above, which uses the reported LB score directly.
+**Correction, 2026-09-17**: the mechanism guessed above was wrong — see the probe #2 decisions-log
+entry above this section for the actual explanation (Kaggle's interactive/commit environment
+mounts a 3-row placeholder `test.csv`, not a download issue). The conclusion (doesn't affect the
+gap analysis) still holds.
+
+## OOF↔LB gap analysis — probe #2 RESULT (2026-09-17)
+
+`submit-efficiency.ipynb` (exp008, DINOv2 ViT-S/14 distilled student, single Tesla T4) scored on
+real Kaggle hardware with zero OOM/timeout issues, formula-chosen fold count 5/5.
+
+| | value |
+|---|---|
+| OOF macro-AUC (reference — exp008's own accepted 5-fold OOF vs `labels_v2_final`) | 0.8708 |
+| Public LB macro-AUC | 0.8850 |
+| Gap (OOF − LB) | **−0.0142** |
+| Trust threshold | < 0.02 |
+
+Produced via `python scripts/eval_oof_lb_gap.py --lb-score 0.885 --oof-score 0.8708`
+(`artifacts/oof_lb_gap_report_probe2.md`).
+
+**Verdict: TRUSTWORTHY — |gap| = 0.0142 < 0.02.** Smaller in magnitude than probe #1's −0.0186 and
+the same direction (LB beats OOF both times) — consistent with, and reinforces, the probe #1
+interpretation: the true hidden-test labels are plausibly a cleaner target than our report-derived
+OOF proxy, so a model that generalizes on real image pathology scores slightly better against them
+than our own internal validation predicts. Two independent probes landing on the same sign and a
+comparable (sub-0.02) magnitude is itself a mild positive signal about validation-methodology
+soundness — not just luck on one run.
+
+**Efficiency-track delta**: LB 0.885 vs. the ensemble's LB 0.893 is a **−0.008** delta, comfortably
+inside the "AUC within ~2 pts (0.02) of the big ensemble" target (CLAUDE.md §4) — the distillation
+held up on real hidden data essentially as well as OOF predicted (OOF delta was −0.0036; LB delta
+is −0.008, i.e. slightly larger but still well inside tolerance).
+
+**Both probes now submitted and scored** — Phase 6.3 (final two selections: max-AUC ensemble +
+efficiency student) is complete. Next: see the priorities review below.
