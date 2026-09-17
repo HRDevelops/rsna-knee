@@ -1087,3 +1087,155 @@ is −0.008, i.e. slightly larger but still well inside tolerance).
 
 **Both probes now submitted and scored** — Phase 6.3 (final two selections: max-AUC ensemble +
 efficiency student) is complete. Next: see the priorities review below.
+
+## Diagnostic — gap to leaderboard top, and priority shift (2026-09-17)
+
+With both probes trustworthy but ~6-7 points behind the public LB top (~0.95-0.96), the user
+asked whether the gap is uniform across labels or concentrated, before launching anything further.
+
+**Ensemble per-label OOF-AUC (vs. `labels_v2_final`), worst to best** — recomputed exactly from
+`artifacts/ensemble_recipe.csv` (the actual greedy-selection output, per-label global method,
+mean = 0.87439, matches the documented 0.8744 macro to 4 decimals):
+
+| Label | OOF AUC |
+|---|---|
+| Synovitis | 0.8258 |
+| MCL | 0.8365 |
+| PF OA | 0.8442 |
+| ACL | 0.8522 |
+| Contusion | 0.8593 |
+| Lateral OA | 0.8664 |
+| Lateral Meniscus | 0.8821 |
+| Baker's | 0.8928 |
+| Medial OA | 0.8978 |
+| Fracture | 0.9018 |
+| Effusion | 0.9062 |
+| Medial Meniscus | 0.9277 |
+
+**External reference: Qiu et al. 2024, "Learning co-plane attention across MRI sequences for
+diagnosing twelve types of knee abnormalities," Nature Communications 15:7637**
+(https://www.nature.com/articles/s41467-024-51888-4, PMC11368947). Important caveat found while
+pulling this: **the paper's "twelve types" are NOT the same twelve labels as this competition** —
+despite the superficially identical count, the label sets only partially overlap:
+
+| Our label | Qiu et al. category | AUC (Qiu et al., internal test) | Valid comparison? |
+|---|---|---|---|
+| ACL | ACL | 0.949 | Yes — same pathology |
+| MCL | MCL | 0.782 | Yes — same pathology |
+| Effusion | EFFU | 0.787 | Yes — same pathology |
+| Contusion | CONT | 0.821 | Yes — same pathology |
+| Medial Meniscus + Lateral Meniscus | MENI (combined, not split by side) | 0.763 | Partial — they don't split medial/lateral |
+| Baker's | CYST (popliteal + ganglion + meniscal + synovial cysts, combined) | 0.862 | Partial — broader category than just Baker's |
+| Synovitis | PLICA (synovial plica — an anatomic fold, not inflammation) | 0.877 | **No — different pathology, not a real comparison** |
+| Medial OA / Lateral OA / PF OA | CART (one combined cartilage-damage category, not compartment-split) | 0.790 | Partial — different task granularity |
+| Fracture | *(not evaluated in their 12)* | — | No comparison exists |
+| *(n/a)* | PCL, LCL, IFP, PR | — | We don't evaluate these at all |
+
+**Answer: the gap is NOT uniform — it's concentrated, and the diagnostic is unambiguous.** Where a
+real same-pathology comparison exists:
+- **ACL: ours 0.8522 vs. 0.949 external → gap −0.097.** By far the worst and only label exceeding
+  the >0.05-behind flag by a wide margin.
+- MCL: ours 0.8365 vs. 0.782 → we're AHEAD by +0.055.
+- Effusion: ours 0.9062 vs. 0.787 → AHEAD by +0.119.
+- Contusion: ours 0.8593 vs. 0.821 → AHEAD by +0.038.
+- Meniscus (crude avg of our split vs. their combined): ours ~0.905 vs. 0.763 → AHEAD by +0.14.
+- OA compartments (crude avg of our 3 vs. their 1 combined CART): ours ~0.870 vs. 0.790 → AHEAD by
+  ~+0.08, though this is the least apples-to-apples comparison in the table.
+- Synovitis has NO valid external comparator (Plica ≠ Synovitis) despite being our lowest
+  absolute OOF-AUC — genuinely inconclusive, not evidence of a labeler ceiling.
+
+**This directly cross-checks against the noisy-student blend weights already on record** (2026-09-08
+entry above, `label_blend_v3_candidate.md`): ACL and MCL are the only two labels where the accepted
+blend went report-heavy (w_image 0.1 and 0.3 respectively) — i.e. the report/label engine already
+beats our image models specifically on these two, and MCL is NOT where the external gap is (we're
+ahead externally on MCL) while ACL is both internally report-favored AND externally the single
+biggest published-benchmark gap. Two independent signals point at the same label.
+
+**Decisions made on this evidence:**
+1. **exp010 launched** (T=32 slice-count half only — see below for why 448px is deferred).
+2. **exp011 (MRNet) prep written, NOT launched** — see below, license eligibility is a real open
+   question, not confirmed.
+3. **exp007 (3D ResNet) relaunched to convergence**, low priority, background.
+4. **Label engine round 3 stays deprioritized**, per the user's own pre-stated conditional: it
+   would only be revisited if the gap concentrated in Synovitis/Contusion specifically — Contusion
+   is *ahead* of the external reference (not a gap) and Synovitis has no valid external comparator
+   (inconclusive, not confirmed as a gap). Neither condition is met. ACL is the real finding, and
+   ACL is already established (via the blend weights) as an *image-model* weakness relative to the
+   label engine, not a label-engine weakness — consistent with prioritizing MRNet (ACL-focused
+   auxiliary data) over another label round.
+
+### exp010 (resolution + slice-count ablation) — launched T=32 only, 448px BLOCKED
+
+Requested as the single biggest untested axis. Found a real infrastructure gotcha before
+launching (exactly what "diagnostic first" was for): `scripts/build_cache.py` resamples DICOM to a
+**fixed** 0.3mm/px, 384×384 grid at cache-BUILD time (`data/cache/<study>/<series>.npy` is a
+hardcoded `[n_slices,384,384]` uint8 array) — `dataset.py`'s `__getitem__` only bilinear-upsamples
+this cached array to whatever `image_size` a config requests (`F.interpolate`, line ~276). Setting
+`image_size: 448` without a cache rebuild would therefore test bilinear-upsampling artifacts, not
+real resolution — an invalid experiment that would burn ~10+ H100-hours to answer the wrong
+question.
+
+`slices_per_series` (T), by contrast, IS a pure load-time parameter (`_load_slot_volume`
+linspace-subsamples from the cache's full native slice count) — free to change, no cache rebuild.
+
+**Split the ablation accordingly:**
+- **`configs/exp010_dinov2b_slot_v3labels_t32.yaml`** — T=32 (up from 24), 384px unchanged,
+  otherwise identical to exp006 (same backbone/labels/folds). Launched as a 5-fold array job
+  (`sbatch slurm/train.sbatch configs/exp010_dinov2b_slot_v3labels_t32.yaml`, job 25325). All 5
+  folds confirmed running cleanly (train=3470 val=879 gold=58 loaded, no immediate OOM).
+- **448px is BLOCKED on quota, not launched.** A genuine test needs a NEW cache at ~0.257mm/px
+  (same ~115mm FOV, finer spacing — NOT just a wider-FOV cache at the same spacing, since the
+  hypothesis is about small/fine structures like meniscus and cartilage). Measured cost: current
+  384px cache is 113GB; (448/384)^2 ≈ 1.361× → **~154GB new storage needed**, against only
+  **25.71GB free** quota as of this check. Not close — needs either a quota increase or freeing
+  >130GB from somewhere (nothing safe identified; the easy candidates were already reclaimed in
+  the 2026-09-15 cleanup). **Left for the user to decide**: request a quota increase, accept a
+  much smaller subsampled finer-spacing test first (~500 studies ≈ 17.4GB, fits but leaves very
+  little margin — this project has hit the 15GB/3GB quota-guard floors three separate times this
+  session, so cutting it that close again is not recommended without deliberate headroom
+  management), or drop the 448px half entirely and treat T=32 as the full ablation.
+- **Added real `grad_accum_steps` support to `scripts/train.py`** while building this config (the
+  user's own fallback instruction: "if VRAM forces it, grad-accum rather than reducing batch") —
+  defaults to 1 (a no-op; every existing config's training dynamics are byte-for-byte unchanged),
+  accumulation-window-aware NaN/Inf guard (a poisoned micro-batch discards the WHOLE window's
+  accumulated gradient, not just its own contribution, since a summed accumulator can't un-mix a
+  bad batch from good ones after the fact). Not actually needed for T=32 alone (a ~1.33× memory
+  increase, expected to fit in H100 80GB headroom without accumulation) but available if a future
+  448px config needs it.
+
+### exp007 (3D ResNet-50) — relaunched from scratch, chained to convergence
+
+**Not a resume** — the epoch-10 checkpoint was deleted 2026-09-10 to free quota for exp008's
+relaunch (see that entry above), so there was nothing to resume from. This is a full relaunch
+(`train.py --resume auto` finds no `checkpoint.pt`, starts epoch 0 as designed). Launched as a
+5-fold array job (job 25331) plus a 4-deep `sbatch --dependency=afterany:<jobid>` self-resuming
+chain (25336→25337→25338→25339, matching the exp009 self-resuming lesson from earlier this
+session — must not require a live monitoring session) — **5 total sessions × 7h max-hours ≈ 35h
+wall-clock budget**. Real cost estimate, flagged since it's well above the original EXECUTION_PLAN
+budget: the killed run measured ~10.5h/fold to reach 10/25 epochs (40%), implying **~26h/fold full
+cost ≈ 131 GPU-hours total for all 5 folds** — more than double the plan's original ~60 GPU-hour
+estimate for the whole diversity track. Confirmed queued alongside exp010 without a quota/GPU
+conflict (both running concurrently as of this check; per-user GPU cap did queue 2 of exp007's
+folds behind exp010's, resolves naturally as folds complete).
+
+### exp011 (MRNet auxiliary pretraining) — prep script written, NOT launched, license NOT confirmed
+
+`scripts/prep_mrnet.py` written (slot-mapping plan: MRNet's single sequence per plane duplicated
+into both FS/nonFS halves of the corresponding slot pair; pretrain `SlotModel` with `num_targets=3`
+[abnormal/ACL/meniscus] on MRNet's 1,130/120 split, then transfer the backbone weights, dropping
+the study-head, into a normal 12-target fine-tune on our data).
+
+**Did NOT confirm eligibility — found a real problem instead.** MRNet's terms of use (checked
+2026-09-17): "Permission is granted to view and use the MRNet Dataset without charge for
+**PERSONAL, NON-COMMERCIAL RESEARCH PURPOSES ONLY**... you may **NOT share the download link**
+with others," gated behind a signed Research Use Agreement. Two separate problems for this
+project: (1) whether training for a cash-prize Kaggle competition counts as "non-commercial
+research" is a real legal question this script doesn't and shouldn't resolve; (2) "may not share
+the link" + "personal use only" is in direct tension with CLAUDE.md's winners'-obligation
+requirement to PUBLICLY release weights — baking an MRNet-pretrained encoder into a publicly
+released model is arguably redistributing a derivative of gated, non-shareable data, and plausibly
+fails EXECUTION_PLAN.md Phase 4.5's own "freely & publicly available" bar regardless of the
+commercial-use question. **Recommendation, not a decision made here: the user should personally
+verify against the actual RSNA competition's external-data rules and the full MRNet Research Use
+Agreement text before any download happens under this project.** No data downloaded, no
+eligibility claimed.

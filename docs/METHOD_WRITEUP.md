@@ -17,9 +17,11 @@ predictions. The image side (§5–§7) is a 2.5D per-series ViT encoder with sl
 attention, laterality-normalized, ensembled via greedy forward selection over four candidate
 models. Final ensemble OOF macro-AUC (vs. the calibrated report labels) is **0.8744**, distilled
 into a single efficiency-track model at **0.8708** (−0.0036, comfortably inside the 0.015 target)
-running in **7.5 minutes** per ~1,300 studies on the measured hardware (§8). Final public/private
-leaderboard rank: **pending — probe #1 (ensemble) has not been submitted yet as of this writing;
-see §11.**
+running in **7.5 minutes** per ~1,300 studies on the measured hardware (§8). Both probes are
+submitted and scored: **ensemble 0.893 public LB, efficiency 0.885 public LB** (−0.008 delta,
+inside the CLAUDE.md §4 efficiency-track target); both OOF↔LB gaps measured trustworthy
+(−0.0186, −0.0142, both < the pre-registered 0.02 threshold — see §11 and `docs/EXPERIMENTS.md`).
+Final private-leaderboard rank: **pending competition close.**
 
 Solo effort, on a shared university HPC cluster (SLURM, H100 x4/node, BeeGFS shared storage — see
 `docs/HPC_WORKFLOW.md`). Total GPU-hours not separately tallocated, but the largest single costs
@@ -291,16 +293,34 @@ that failure mode with data loss instead of a broken import.
 
 ## 11. Final leaderboard result
 
-**Pending.** Neither submission has been probed yet as of this writing (2026-09-15) — Kaggle
-datasets for the code and all 4 deployed models' weights are staged and ready
-(`docs/SUBMISSION_RUNBOOK.md` §1) but not yet pushed. Plan: probe #1 is the 3-member ensemble
-(OOF macro 0.8744), probe #2 is the exp008 efficiency student (OOF macro 0.8708). The OOF↔LB gap
-will be measured once after probe #1 and used to decide whether the validation setup is trustworthy
-before probe #2 — see `docs/EXPERIMENTS.md`'s "OOF↔LB gap analysis" section and
-`scripts/eval_oof_lb_gap.py` for the pre-registered interpretation rule (|gap| < 0.02 → proceed;
-≥ 0.02 → stop and investigate site-level leakage before any further submission). This section will
-be filled in with actual OOF→public-LB→private-LB numbers and final rank once both probes and the
-competition close are complete.
+**Both probes submitted and scored (2026-09-16/17).** Public leaderboard top at time of writing:
+~0.95–0.96 macro-AUC.
+
+| | OOF macro-AUC (reference) | Public LB | Gap (OOF − LB) | Verdict |
+|---|---|---|---|---|
+| Probe #1 — ensemble (3 members) | 0.8744 | **0.8930** | −0.0186 | TRUSTWORTHY (< 0.02) |
+| Probe #2 — efficiency (exp008) | 0.8708 | **0.8850** | −0.0142 | TRUSTWORTHY (< 0.02) |
+
+Both gaps are negative (LB beats OOF) and land on the same sign with comparable, sub-threshold
+magnitude — read as a mild positive signal on validation-methodology soundness rather than a
+coincidence on one run. Interpretation (see `docs/EXPERIMENTS.md`'s "OOF↔LB gap analysis — probe
+#1/#2 RESULT" entries for the full checklist): a negative gap isn't automatically good news, but
+site/template leakage would push the gap the *opposite* direction, and the most parsimonious
+reading is that the true hidden-test labels (image-reviewed) are a cleaner target than our
+report-derived OOF proxy (~18% systematic disagreement, §3) — a model that learned real image
+pathology can plausibly score higher against the clean labels than our own noisier internal
+validation predicts.
+
+Efficiency-track delta: LB 0.885 vs. ensemble LB 0.893 = **−0.008**, comfortably inside the
+"within ~2 pts of the big ensemble" target (CLAUDE.md §4) — matches the OOF-predicted delta
+(−0.0036) closely enough to trust the distillation held up on real hidden data.
+
+**Gap to the leaderboard top (~6–7 points) is real and being treated as structural, not noise** —
+see `docs/EXPERIMENTS.md`'s 2026-09-17 diagnostic entry for the per-label breakdown against an
+external published benchmark (Qiu et al. 2024, Nat Commun) and the resulting priority shift (ACL
+specifically flagged as far behind published external AUCs; MRNet auxiliary pretraining and a
+resolution/slice-count ablation launched in response). Final private-leaderboard rank: **pending
+competition close.**
 
 ## 12. Reproducibility
 

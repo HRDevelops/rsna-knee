@@ -80,9 +80,19 @@ this kind of technical walkthrough.
 
 ## 7. Results + close (~1 min)
 
-- Final OOF → public LB → private LB numbers and rank — **fill in once known.**
-- One sentence: what would be the next thing tried with more time (e.g., a genuinely diverse 3rd
-  architecture family trained to completion, or a 3rd LLM pass on the lowest-agreement reports).
+- OOF → public LB, both probes: ensemble **0.8744 → 0.893**, efficiency **0.8708 → 0.885**
+  (−0.008 delta, inside the efficiency-track target). Both OOF↔LB gaps measured trustworthy
+  (−0.0186, −0.0142, both under the pre-registered 0.02 bar) — a mild positive signal on the
+  validation methodology, not just luck. **Private LB / final rank: fill in once the competition
+  closes.**
+- Gap to the public LB top (~0.95–0.96) is ~6–7 points and treated as structural: a diagnostic
+  against a published external benchmark (Qiu et al. 2024, Nat Commun) showed our gap is *not*
+  uniform across labels — ACL is dramatically behind the external reference while most other
+  comparable labels are ahead of it — redirecting remaining effort toward MRNet auxiliary
+  pretraining (ACL/meniscus-focused) and a resolution/slice-count ablation, rather than another
+  label-engine round.
+- One sentence: what's still running with more time — a genuinely diverse 3rd architecture family
+  (exp007, 3D ResNet, relaunched to full convergence) and the MRNet pretraining route.
 - Repo/weights/writeup pointer (Apache-2.0, `docs/METHOD_WRITEUP.md` for full detail).
 
 ---

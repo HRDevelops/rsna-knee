@@ -332,17 +332,26 @@ def main() -> None:
     # e.g. resuming with epochs set equal to the checkpoint's epoch, to force an eval-only pass
     # without further training); reflects "last completed epoch" correctly in both cases.
 
+    # Gradient accumulation (2026-09-17, exp010 resolution/slice-count ablation): defaults to 1
+    # (a no-op — every existing config without this field steps every batch exactly as before,
+    # byte-for-byte the same training dynamics as exp002-009). Set > 1 to raise T/image_size
+    # without cutting the effective batch size when a higher-res config no longer fits the same
+    # micro-batch in VRAM: batch_size_studies becomes the per-step micro-batch, and the EFFECTIVE
+    # batch is batch_size_studies * grad_accum_steps.
+    grad_accum_steps = cfg["train"].get("grad_accum_steps", 1)
+
     for epoch in range(start_epoch, epochs):
         model.train()
         epoch_loss = 0.0
         n_batches = 0
+        optimizer.zero_grad(set_to_none=True)
+        window_has_nan = False
         for batch in train_loader:
             volumes = batch["volumes"].to(device, non_blocking=True)
             mask = batch["mask"].to(device, non_blocking=True)
             labels = batch["labels"].to(device, non_blocking=True)
             weights = batch["weights"].to(device, non_blocking=True)
 
-            optimizer.zero_grad(set_to_none=True)
             with torch.autocast(device_type="cuda", dtype=autocast_dtype):
                 logits = model(volumes, mask)
                 if cfg["train"]["loss"] == "kl_bce_mix":
@@ -353,11 +362,39 @@ def main() -> None:
                     loss = weighted_bce_loss(logits, labels, weights)
                 else:
                     loss = nn.functional.binary_cross_entropy_with_logits(logits, labels)
-            loss.backward()
+            # NaN/Inf guard, accumulation-aware: a poisoned micro-batch's gradient, once summed
+            # into the accumulator, corrupts every other micro-batch's gradient in the SAME window
+            # (unlike the grad_accum_steps=1 case, it can't be skipped in isolation) — so flag the
+            # whole window and skip the step for all of it, not just this micro-batch.
+            if not torch.isfinite(loss):
+                print(f"  epoch {epoch} batch {n_batches}: non-finite loss ({loss.item()}) — "
+                      f"poisons this accumulation window, will skip its optimizer step.", file=sys.stderr)
+                window_has_nan = True
+                n_batches += 1
+                is_window_end = (n_batches % grad_accum_steps == 0) or (n_batches == len(train_loader))
+                if is_window_end:
+                    optimizer.zero_grad(set_to_none=True)
+                    window_has_nan = False
+                continue
+            (loss / grad_accum_steps).backward()
             if args.debug_grad_norms and n_batches % 10 == 0:
                 norms = component_grad_norms(model)
                 print(f"  epoch {epoch} batch {n_batches}: loss={loss.item():.4f} "
                       f"grad_norms={ {k: round(v, 4) for k, v in norms.items()} }", file=sys.stderr)
+
+            epoch_loss += loss.item()
+            n_batches += 1
+            is_window_end = (n_batches % grad_accum_steps == 0) or (n_batches == len(train_loader))
+            if not is_window_end:
+                continue
+
+            if window_has_nan:
+                print(f"  epoch {epoch} batch {n_batches}: skipping optimizer step — a non-finite "
+                      f"loss landed earlier in this accumulation window.", file=sys.stderr)
+                optimizer.zero_grad(set_to_none=True)
+                window_has_nan = False
+                continue
+
             # Clip backbone and head/slice-agg params SEPARATELY, not with one combined norm.
             # Diagnostic finding (2026-09-07): backbone grad norm is wildly spiky (1-25+) while
             # the from-scratch head sits at 0.1-4 — a single global clip_grad_norm_ computes one
@@ -366,23 +403,10 @@ def main() -> None:
             # starving their learning signal. This is very likely the actual collapse mechanism.
             for group in param_groups:
                 torch.nn.utils.clip_grad_norm_(group["params"], 1.0)
-            # NaN/Inf guard (2026-09-09: exp008 fold3 hit a single bad batch that produced a NaN
-            # loss around epoch 16, then stayed NaN for the rest of training — once a step actually
-            # applies NaN gradients, every parameter they touch is permanently poisoned, wasting
-            # every subsequent epoch and crashing the final AUC eval with no usable checkpoint at
-            # all. Skipping the step on a non-finite loss costs one batch's progress, not the run.
-            if not torch.isfinite(loss):
-                print(f"  epoch {epoch} batch {n_batches}: non-finite loss ({loss.item()}) — "
-                      f"skipping this batch's optimizer step.", file=sys.stderr)
-                optimizer.zero_grad(set_to_none=True)
-                n_batches += 1
-                continue
             optimizer.step()
             scheduler.step()
             ema.update(model)
-
-            epoch_loss += loss.item()
-            n_batches += 1
+            optimizer.zero_grad(set_to_none=True)
 
             if time.time() - t_start > max_seconds:
                 print(f"Wall-clock guard triggered mid-epoch {epoch} — checkpointing and exiting.",
