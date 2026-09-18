@@ -1353,3 +1353,55 @@ comparable to exp006's real fold-0 OOF (different, much smaller training set).
 
 Job 25344 (relaunched after the accidental kill above), all 5 folds active. Per-label deltas vs.
 exp006 — ACL especially — to be reported once it lands.
+
+## Quota crisis recurrence (2026-09-18) — same failure mode as exp003/exp008/exp009, caused this time by running too much concurrently
+
+Checked all four 2026-09-17 jobs the next day. **None finished cleanly.** Headroom crossed the
+15GB routine-save floor while exp010, exp012, and the 448px cache build were all running at once
+(14GB cache + growing checkpoints from two simultaneous 5-fold trainings), and kept dropping —
+exp013/exp014 (the 400-study subset test) actually ran into the 3GB *emergency* floor too
+(1.6GB headroom at the time). This is exactly the failure mode `docs/EXPERIMENTS.md` has logged
+three times before (exp003, exp008, exp009) — this time self-inflicted by launching 4-5 jobs at
+once without re-checking quota as they consumed it, not by a single big write.
+
+**exp010 (T=32)**: all 5 folds hit the wall-clock guard mid-epoch (18/25) with checkpoint writes
+silently skipped from ~epoch 15-17 onward. Resumable — every fold has a real checkpoint at
+**epoch 17** (18 epochs done, 7 remaining), no progress actually lost beyond what quota-skipping
+cost between the last successful save and the wall-clock cutoff. 8.8GB on disk.
+
+**exp012 (ACL anatomy-aware head)**: only fold0 has a checkpoint (**epoch 23**, 1 epoch short of
+the full 25 — very cheap to finish). Folds 1-4 have **no checkpoint at all** — they started later
+(queued behind exp010 for GPU slots) and headroom was already below the routine floor by the time
+they got a GPU, so they never wrote a first save. Those 4 folds need a full restart, not a resume.
+
+**exp013/exp014 (400-study subset, 384 vs 448px)**: training itself actually completed 25 epochs
+and printed real OOF results before crashing — the crash was a bug in this session's own subset
+construction (the 400-study `folds.parquet` subset excluded gold-58 entirely, but `train.py`
+unconditionally evaluates a gold split; an empty gold set produced an empty DataFrame with no
+`study_uid` column, `KeyError: 'study_uid'` inside the gold-58 eval, after the OOF eval had already
+run and printed). **The numbers we actually needed survived the crash**, in the logs:
+
+| | macro | ACL | MCL | MedMen | LatMen | MedOA | LatOA | PFOA | Effusion | Synovitis | Baker's | Contusion | Fracture |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| exp013 (384px) | 0.7482 | 0.6311 | 0.5865 | 0.7697 | 0.6071 | 0.9507 | 0.7083 | 0.8054 | 0.9462 | 0.9052 | 0.6236 | 0.6813 | 0.7628 |
+| exp014 (448px) | 0.7447 | 0.6281 | 0.5513 | 0.7729 | 0.6014 | 0.9326 | 0.7244 | 0.8162 | 0.9473 | 0.9136 | 0.5879 | 0.6787 | 0.7821 |
+| Δ (448-384) | −0.0035 | −0.0030 | −0.0352 | +0.0032 | −0.0057 | −0.0181 | +0.0161 | +0.0108 | +0.0011 | +0.0084 | −0.0357 | −0.0026 | +0.0193 |
+
+**Read with real caution**: n=80 validation studies, mixed-sign deltas of similar magnitude to
+gold-58's own noise band, and both numbers sit far below exp006's real ~0.87 macro simply because
+the training set here is 320 studies vs. exp006's ~3470 — not comparable to the real baseline, and
+not powered to detect a resolution effect at this scale. **Net read: no clear resolution benefit
+on this cheap test, but "inconclusive" is the honest label, not "resolution doesn't help."** ACL
+specifically went slightly negative (−0.0030) — doesn't support the resolution hypothesis for ACL
+on this evidence, though again, not a well-powered test of it. Neither run left a usable checkpoint
+(quota was already past the emergency floor by the time they'd have written one) — not resumable,
+would need a full relaunch to get weights, and the 448px cache that fed exp014 has already been
+deleted (see below) since its purpose — this comparison — is served.
+
+**Remediation taken**: deleted `data/cache_448_subset/` (14GB, its comparison already extracted
+above) — headroom 1.56GB -> **15.17GB**, just barely back above the routine-save floor, no real
+margin. **Did not relaunch anything** — resuming exp010 (7 epochs x 5 folds) and restarting
+exp012's 4 missing folds at the same time would very plausibly repeat this exact crisis again
+immediately. Left for the user: whether to resume sequentially with active quota monitoring,
+request a durable quota increase given this is the fourth recurrence of the same failure mode, or
+free more headroom first (nothing else obviously safe to delete was found in this pass).
