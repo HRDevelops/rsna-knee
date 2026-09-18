@@ -1405,3 +1405,71 @@ exp012's 4 missing folds at the same time would very plausibly repeat this exact
 immediately. Left for the user: whether to resume sequentially with active quota monitoring,
 request a durable quota increase given this is the fourth recurrence of the same failure mode, or
 free more headroom first (nothing else obviously safe to delete was found in this pass).
+
+## Quota raised to 650GB; guardrails; resumes; exp015 (2026-09-18)
+
+Quota confirmed active: 650GB hard limit, **265.2GB free** (384.8GB used). Storage is no longer the
+binding constraint — but the process failures behind the last two incidents are fixed separately
+below, not left to headroom.
+
+### Process guardrails (two self-inflicted incidents: name-matched scancel, concurrent-launch quota crash)
+- **`scripts/safe_scancel.py`**: cancels by explicit job ID only, lists exactly what would be
+  cancelled first (list-only by default, `--confirm` to act); rejects names, patterns, `--user`.
+  Verified: `safe_scancel.py rsna_train` -> REFUSING, exit 2.
+- **`scripts/safe_sbatch.py`**: pre-launch disk projection. Sums projected disk of every queued+
+  running job (ledger in `artifacts/disk_ledger.json`; per-fold footprint by backbone x folds, or a
+  `# DISK_PROJECTION_GB` header for cache builds; live jobs launched outside the wrapper counted at a
+  conservative 5GB) and refuses if the total exceeds free quota minus 30GB. Verified both ways:
+  passes at 173.5GB projected vs. a 234.7GB budget; refuses (exit 2) when headroom is forced to
+  260GB. `--reuses JOBID` marks chain/resume links so the same checkpoint files aren't counted
+  twice. Also names train jobs after their experiment (previously every job was `rsna_train`, which
+  is exactly what made the name-based cancel so destructive). Known conservatism: a running job's
+  already-written files are counted again, so it can refuse too often but not too rarely.
+- Every launch below went through `safe_sbatch.py`.
+- **Orphan checkpoints: there were none to delete.** Inventory of every `*.pt` under `artifacts/`:
+  only the deployed models' `best.pt` (exp003/005/006/008), plus exp010's five and exp012 fold0's
+  `checkpoint.pt` — which are the *resumable* ones, not orphans. The killed/failed runs (exp007,
+  exp013, exp014) wrote no checkpoints at all, only ~50KB of `config.yaml`/`oof.parquet` stubs, left
+  in place. Free space after cleanup: unchanged, 265.2GB.
+
+### Bug found in my own grad-accumulation code (2026-09-17), fixed
+`scheduler` was built from `len(train_loader)` steps/epoch but `scheduler.step()` fires once per
+accumulation *window*. With `grad_accum_steps=2` that doubled warmup (5 -> 10 real epochs) and
+stopped the cosine decay at its midpoint. Only **exp014** ran with accumulation, so only exp014 was
+affected (exp010/exp012 use `grad_accum_steps=1`, where the fix is a no-op) — one more reason the
+400-study test is void. Fixed in `train.py` (`-(-len(train_loader)//grad_accum_steps)`); found while
+planning exp015, before it could bite a real run.
+
+### 400-study 384-vs-448 test (exp013/exp014): VOID — underpowered, do not cite
+Only 80 validation studies, mixed-sign per-label deltas inside the noise band, macros ~0.75 vs
+exp006's ~0.87 purely from a 10x smaller training set, and exp014 additionally ran with the
+scheduler bug above. The numbers logged in the 2026-09-18 quota-crisis entry are retained as a
+record of what happened, **not as evidence for or against resolution**. The question is being
+answered properly by exp015.
+
+### ACL conclusion — updated (supersedes the 2026-09-17 "ACL dedicated workstream" framing)
+On the clean gold-58 labels, ACL AUC is **~0.988 for both the report labels (0.9890) and the image
+ensemble (0.9877)**. The 0.8522 ensemble OOF ACL AUC is measured against noisy report-derived soft
+labels over 4,349 studies. So the "−0.097 gap vs. Qiu et al." was mostly **proxy-label noise in our
+evaluation target, not a vision deficit**. Consequence: **OOF systematically understates true
+performance** — consistent with both LB probes beating their OOF (+0.0186 ensemble, +0.0142
+efficiency). **ACL is no longer a dedicated workstream**: exp012 (anatomy-aware ACL init) finishes
+since it's already mostly trained, and nothing further ACL-specific is pursued unless it wins.
+Caveats kept honest: gold-58 is n=58 (wide CIs), and the side-unresolved overrepresentation among
+ACL's highest-error studies (60% vs. 34%) was a hypothesis never cross-checked against other labels
+— left unresolved, not refuted. Also: because OOF is a noisy proxy, small OOF deltas between runs
+(exp010/012/015 vs. exp006) should be read with that in mind; gold-58 is the clean-but-tiny
+tripwire, both reported.
+
+### External data: none
+KneeMRI stays dropped (license unresolved: host page and paper PDF 404, no authoritative CC text
+found). MRNet was dropped earlier (non-commercial-only + no-link-sharing agreement vs. prize
+eligibility and the public-weights obligation). No external data will be used.
+
+### Launches (staggered, guarded)
+- **exp010 (T=32) resumed**, job **25543**, all 5 folds, `Resumed from epoch 18` confirmed in every
+  fold's log (checkpoints were at epoch 17; 7 epochs to go, ~2.7h at the observed ~23 min/epoch).
+- **448px cache rebuild**, job **25548** (20 shards, ZEN4 CPU partition), `data/cache_448`, ~0.2571
+  mm/px on a 448px grid (same ~115mm FOV as the main cache — a real resolution increase, not an
+  upsample), projected ~154GB (main cache 113GB x (448/384)^2). Launched while waiting on exp010's
+  first post-resume checkpoint since it needs no GPU.
