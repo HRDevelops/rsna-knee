@@ -1473,3 +1473,17 @@ eligibility and the public-weights obligation). No external data will be used.
   mm/px on a 448px grid (same ~115mm FOV as the main cache — a real resolution increase, not an
   upsample), projected ~154GB (main cache 113GB x (448/384)^2). Launched while waiting on exp010's
   first post-resume checkpoint since it needs no GPU.
+
+### exp010 resume: folds 0-3 OOM'd on g006, resubmitted (2026-09-18)
+Job 25543 (5 folds): folds 0-3 died in ~43s with CUDA OOM — a co-tenant process held 72GiB on their
+GPU (node g006's only other job, `sergiy.bu` 25482, requests no GRES; see HPC_WORKFLOW.md §3.5a).
+Not a code/checkpoint problem: every checkpoint was verified intact at epoch 17 afterwards. Fold 4
+landed on g002 and kept training. **Folds 0-3 resubmitted as job 25568** (`--array=0-3
+--exclude=g006`, `--reuses 25543` since it rewrites the same checkpoints), resuming from epoch 17 ->
+18. The new `[gpu-binding]` diagnostics show all four got their own GPU (distinct UUIDs, 0 MiB used)
+on g002/g003.
+- **`safe_sbatch.py` fix**: this resubmission was first REFUSED — a false positive, the guard was
+  counting the 448px cache build's full 160GB projection although ~148GB was already written (free
+  quota had already dropped 265 -> 117GB). Live jobs' projections now subtract bytes already on disk
+  (`du -sb` of their output dir), never below 0. Passed after the fix (16.7GB remaining projected vs.
+  87GB budget) — protection kept, the double count removed; `--force` was not used.

@@ -197,3 +197,21 @@ Useful: `sacct -j <id> --format=Elapsed,MaxRSS,State`, `scontrol show job <id>`,
     # full env — remember: no modules/conda, plain pip into the venv above; and every sbatch/srun
     # touching the H100 partition needs --qos=issai-h100 (the account default QOS, issai-zen4,
     # is not valid there).
+
+### 3.5a. Update 2026-09-18 — a second failure mode: no-GRES co-tenant jobs, and how to tell it from the isolation bug
+exp010's resume (job 25543) lost folds 0-3 in 43s to `torch.OutOfMemoryError` on g006: each task had
+~7GB and "Process N has 72 GiB in use" on the same GPU. g006 then held exactly one other job —
+`sergiy.bu` 25482, running 15h, listed by `squeue` with `TRES_PER_NODE = N/A` (**no GRES requested**).
+That job is the likely (not proven — no `nvidia-smi` access to g006) owner of the 72GiB: a job that
+requests no GPU isn't confined by the GPU device cgroup, so it can use a GPU that SLURM allocated to
+someone else. Note `sergiy.bu` also has two multi-day `N/A` jobs on g002, so this is not unique to g006.
+- **Diagnostics now built in**: `slurm/train.sbatch` logs `[gpu-binding]` (host, `CUDA_VISIBLE_DEVICES`,
+  `SLURM_JOB_GPUS`) plus `nvidia-smi` (index, UUID, memory used) at task start. On g002/g003 every task
+  saw exactly ONE GPU (index 0, distinct UUID per task, 0 MiB used) while `SLURM_JOB_GPUS` differed
+  per task (2, 3, 0, 1) — i.e. **the device cgroup isolation works there and `CUDA_VISIBLE_DEVICES=0`
+  is correct**. Do NOT "fix" it by exporting `CUDA_VISIBLE_DEVICES=$SLURM_JOB_GPUS`: with one visible
+  device an index of 2 or 3 is invalid and CUDA would fail.
+- **Mitigation**: `sbatch --exclude=<node>` on submission (e.g. `safe_sbatch.py ... -- --exclude=g006 ...`);
+  not baked into `train.sbatch` because the offending job is transient. Check `squeue -w <node>` for
+  `N/A`-TRES jobs before heavy launches. A run that OOMs within ~1 minute with a large "other process"
+  figure is this, not a code bug.

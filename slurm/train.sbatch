@@ -28,6 +28,13 @@ export PYTHONPATH="${PYTHONPATH:-}:$(pwd)"
 # mitigation for exactly this "reserved but unallocated memory" growth pattern.
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
+# 2026-09-18 GPU-binding diagnostics (no behavior change): on 2026-09-18 four exp010 folds OOM'd in
+# 43s on g006 because another tenant's process held 72GiB on the GPU they were bound to (the
+# HPC_WORKFLOW.md §3.5 co-location bug). Log what SLURM actually gave this task and what is already
+# on the GPU(s) it can see, so the next collision is attributable from the job's own .out file.
+echo "[gpu-binding] host=$(hostname) job=${SLURM_JOB_ID:-?}_${SLURM_ARRAY_TASK_ID:-?} CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset} SLURM_JOB_GPUS=${SLURM_JOB_GPUS:-unset} SLURM_STEP_GPUS=${SLURM_STEP_GPUS:-unset} GPU_DEVICE_ORDINAL=${GPU_DEVICE_ORDINAL:-unset}"
+nvidia-smi --query-gpu=index,uuid,memory.used,memory.total --format=csv,noheader || true
+
 CONFIG=${1:-configs/exp001_dinov2s_slot.yaml}
 python scripts/train.py --config "$CONFIG" --fold "$SLURM_ARRAY_TASK_ID" \
     --out "$RSNA_ROOT/artifacts" --resume auto --max-hours 7.0

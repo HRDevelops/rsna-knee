@@ -5,6 +5,7 @@
 # Written to data/cache_448 — never touches the main data/cache. Resumable (skips existing .npy).
 # Measured cost: the main cache is 113GB; the 448 variant scales by (448/384)^2 = 1.361 -> ~154GB.
 # DISK_PROJECTION_GB: 160
+# DISK_PROJECTION_PATH: data/cache_448
 #SBATCH --job-name=rsna_cache_448
 #SBATCH --partition=ZEN4
 #SBATCH --qos=issai-zen4

@@ -40,9 +40,11 @@ unambiguous). What it does:
 --reuses JOBID: this submission is a resume/chain link that rewrites the SAME checkpoint files as
 JOBID (e.g. an afterany chain) — projects 0GB so the same disk isn't counted twice.
 
-Known conservatism: a running job's already-written files are counted again as "projected"
-(the quota reading already includes them). Overcounting can only make this refuse too often, never
-too rarely — acceptable at current headroom; --force exists for the deliberate exception.
+Accounting for live jobs: a job's projection is reduced by what it has ALREADY written (its
+`# DISK_PROJECTION_PATH:` header dir for cache builds, artifacts/<experiment>/ for train jobs), since
+the free-quota reading already excludes those bytes — counting them again made this refuse a
+launch while a 160GB cache build was 90% done (2026-09-18 false positive). Still conservative
+(never below 0, jobs of unknown location count in full). --force exists for the deliberate exception.
 """
 from __future__ import annotations
 
@@ -70,6 +72,27 @@ def quota_free_gb() -> float:
     parts = out.split(",")
     used, hard = float(parts[2]), float(parts[3])
     return (hard - used) / 1024 ** 3
+
+
+def written_gb(root: Path, entry: dict) -> float:
+    """Bytes a live job has already put on disk, in GB, so its projection isn't double counted."""
+    path = None
+    script = root / "code" / "slurm" / str(entry.get("script", ""))
+    if not script.exists():
+        script = Path("slurm") / str(entry.get("script", ""))
+    if script.exists():
+        m = re.search(r"^#\s*DISK_PROJECTION_PATH:\s*(\S+)", script.read_text(), re.MULTILINE)
+        if m:
+            path = root / m.group(1)
+    if path is None and entry.get("experiment") and str(entry.get("script", "")).startswith("train"):
+        path = root / "artifacts" / entry["experiment"]
+    if path is None or not path.exists():
+        return 0.0
+    try:
+        out = subprocess.check_output(["du", "-sb", str(path)], text=True, timeout=120)
+        return int(out.split()[0]) / 1024 ** 3
+    except Exception:  # noqa: BLE001 - unmeasurable -> count in full (conservative)
+        return 0.0
 
 
 def alive_array_ids() -> set:
@@ -154,8 +177,11 @@ def main() -> int:
     for e in ledger:
         if e["job_id"] in alive:
             known_ids.add(e["job_id"])
-            live_total += e["projected_gb"]
-            rows.append((e["job_id"], e.get("experiment") or e.get("script"), e["projected_gb"], "ledger"))
+            written = written_gb(root, e)
+            remaining = max(0.0, e["projected_gb"] - written)
+            live_total += remaining
+            rows.append((e["job_id"], e.get("experiment") or e.get("script"), remaining,
+                         f"ledger; {written:.1f}GB of {e['projected_gb']:.1f}GB already on disk"))
     for jid in sorted(alive - known_ids):
         live_total += UNKNOWN_JOB_GB
         rows.append((jid, "(not launched via safe_sbatch)", UNKNOWN_JOB_GB, "conservative default"))
