@@ -312,8 +312,20 @@ def main() -> None:
     param_groups = get_param_groups_fn(model, cfg["train"]["lr"], cfg["train"]["backbone_lr_mult"],
                                         cfg["train"]["weight_decay"])
     optimizer = torch.optim.AdamW(param_groups)
+    # Gradient accumulation (2026-09-17, exp010 resolution/slice-count ablation): defaults to 1
+    # (a no-op — every existing config without this field steps every batch exactly as before,
+    # byte-for-byte the same training dynamics as exp002-009). Set > 1 to raise T/image_size
+    # without cutting the effective batch size when a higher-res config no longer fits the same
+    # micro-batch in VRAM: batch_size_studies becomes the per-step micro-batch, and the EFFECTIVE
+    # batch is batch_size_studies * grad_accum_steps.
+    grad_accum_steps = cfg["train"].get("grad_accum_steps", 1)
+    # 2026-09-18 bugfix: scheduler.step() fires once per accumulation WINDOW, not once per batch, so
+    # steps_per_epoch must be the number of optimizer steps per epoch. The first version of grad
+    # accumulation passed len(train_loader) here, which with grad_accum_steps=2 made warmup last
+    # twice as many epochs and stopped the cosine decay at its midpoint (found while planning
+    # exp015; affected only exp014, already void). A no-op when grad_accum_steps == 1.
     scheduler = build_scheduler(optimizer, cfg["train"]["warmup_epochs"], cfg["train"]["epochs"],
-                                 len(train_loader))
+                                 -(-len(train_loader) // grad_accum_steps))
     ema = EMA(model, cfg["train"]["ema"])
 
     start_epoch = 0
@@ -336,14 +348,6 @@ def main() -> None:
     epoch = start_epoch - 1  # defined even if the loop body never runs (start_epoch >= epochs —
     # e.g. resuming with epochs set equal to the checkpoint's epoch, to force an eval-only pass
     # without further training); reflects "last completed epoch" correctly in both cases.
-
-    # Gradient accumulation (2026-09-17, exp010 resolution/slice-count ablation): defaults to 1
-    # (a no-op — every existing config without this field steps every batch exactly as before,
-    # byte-for-byte the same training dynamics as exp002-009). Set > 1 to raise T/image_size
-    # without cutting the effective batch size when a higher-res config no longer fits the same
-    # micro-batch in VRAM: batch_size_studies becomes the per-step micro-batch, and the EFFECTIVE
-    # batch is batch_size_studies * grad_accum_steps.
-    grad_accum_steps = cfg["train"].get("grad_accum_steps", 1)
 
     for epoch in range(start_epoch, epochs):
         model.train()

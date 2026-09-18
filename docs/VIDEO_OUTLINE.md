@@ -85,14 +85,15 @@ this kind of technical walkthrough.
   (−0.0186, −0.0142, both under the pre-registered 0.02 bar) — a mild positive signal on the
   validation methodology, not just luck. **Private LB / final rank: fill in once the competition
   closes.**
-- Gap to the public LB top (~0.95–0.96) is ~6–7 points and treated as structural: a diagnostic
-  against a published external benchmark (Qiu et al. 2024, Nat Commun) showed our gap is *not*
-  uniform across labels — ACL is dramatically behind the external reference while most other
-  comparable labels are ahead of it — redirecting remaining effort toward MRNet auxiliary
-  pretraining (ACL/meniscus-focused) and a resolution/slice-count ablation, rather than another
-  label-engine round.
-- One sentence: what's still running with more time — a genuinely diverse 3rd architecture family
-  (exp007, 3D ResNet, relaunched to full convergence) and the MRNet pretraining route.
+- Gap to the public LB top (~0.95–0.96) is ~6–7 points. A diagnostic against a published external
+  benchmark (Qiu et al. 2024, Nat Commun) first made ACL look like a dramatic gap — but a gold-58
+  check showed our image ensemble and the report labels both reach ~0.988 ACL AUC on clean labels,
+  so most of the apparent gap is proxy-label noise in our OOF metric, not a vision deficit (a good
+  "we checked our own diagnosis and it was partly a measurement artifact" beat). OOF therefore
+  understates true performance, consistent with both LB probes beating OOF.
+- One sentence: what's still running with more time — a 448px resolution ablation and a final
+  ensemble re-selection. (3D ResNet diversity attempt and external-data pretraining were dropped:
+  cost and licensing respectively.)
 - Repo/weights/writeup pointer (Apache-2.0, `docs/METHOD_WRITEUP.md` for full detail).
 
 ---

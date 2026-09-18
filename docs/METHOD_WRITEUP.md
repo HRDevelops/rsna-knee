@@ -317,10 +317,14 @@ Efficiency-track delta: LB 0.885 vs. ensemble LB 0.893 = **−0.008**, comfortab
 
 **Gap to the leaderboard top (~6–7 points) is real and being treated as structural, not noise** —
 see `docs/EXPERIMENTS.md`'s 2026-09-17 diagnostic entry for the per-label breakdown against an
-external published benchmark (Qiu et al. 2024, Nat Commun) and the resulting priority shift (ACL
-specifically flagged as far behind published external AUCs; MRNet auxiliary pretraining and a
-resolution/slice-count ablation launched in response). Final private-leaderboard rank: **pending
-competition close.**
+external published benchmark (Qiu et al. 2024, Nat Commun). That comparison initially flagged ACL
+as far behind published external AUCs, but the follow-up (2026-09-18) showed most of that "gap" is
+proxy-label noise, not a vision deficit: on the clean gold-58 labels both the report labels and the
+image ensemble reach ~0.988 ACL AUC, while OOF is measured against noisy report-derived soft
+labels. So OOF systematically *understates* true performance — consistent with both probes beating
+their OOF. Remaining effort went to a resolution/slice-count ablation (exp010 T=32, exp015 448px) and
+a final ensemble re-selection; MRNet and KneeMRI were both dropped on licensing grounds (no external
+data). Final private-leaderboard rank: **pending competition close.**
 
 ## 12. Reproducibility
 
