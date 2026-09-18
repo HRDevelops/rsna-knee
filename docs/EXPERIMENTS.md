@@ -1487,3 +1487,25 @@ on g002/g003.
   quota had already dropped 265 -> 117GB). Live jobs' projections now subtract bytes already on disk
   (`du -sb` of their output dir), never below 0. Passed after the fix (16.7GB remaining projected vs.
   87GB budget) — protection kept, the double count removed; `--force` was not used.
+
+### Launch record, 2026-09-18 (all via `safe_sbatch.py`, `--exclude=g006`)
+- **exp010 (T=32)**: fold 4 in job 25543 (verified: post-resume checkpoint rewritten at epoch 18, 0
+  quota-guard skips); folds 0-3 in job 25568 (resubmission, above). 7 epochs from epoch 18 to 25.
+- **exp012 (ACL anatomy-aware init)**: job 25572 (`--array=0-4`): fold 0 resumes from epoch 23 ->
+  logged `Resumed from epoch 24` (its single final epoch); folds 1-4 restart from scratch (folds 3-4
+  queued behind the 8-GPU per-user cap). One follow-up session, job 25579 (`afterany`), for the
+  from-scratch folds (a 7h session got exp012 to epoch ~24/25 last time).
+- **448px cache**: job 25548 finished — 20/20 shards COMPLETED, `data/cache_448` = 154GB (matching
+  the 154GB projection), 4,407 studies, 24,369 series (identical to the 384px cache's count; the same
+  2 series fail decode in both), spot check `(22, 448, 448) uint8` vs. `(22, 384, 384)`.
+- **exp015 (ViT-B/448/T=24, labels_v3, same folds as exp006)**: `configs/exp015_dinov2b_slot_v3labels_448.yaml`,
+  batch 8, no accumulation (so the comparison to exp006 is exact). Three chained sessions 25576 ->
+  25577 -> 25578 (`afterany`), because T=32 took ~23 min/epoch (~9.7h for 25) and 448px/T=24 carries
+  a similar token count. Sessions after a fold completes just redo its final eval (minutes).
+- **Automatic finish**: job 25580 (`slurm/final_reselection.sbatch`, CPU, `afterany` of 25543, 25568,
+  25579, 25578) runs `compare_runs.py` (per-label deltas vs exp006 -> `artifacts/final_compare_vs_exp006.md`)
+  then `build_ensemble.py` greedy re-selection over {exp003, exp005, exp006, exp010, exp012, exp015}
+  -> `artifacts/final_ensemble_reselection.txt`. `build_ensemble.py` gained `--out` because it
+  previously always wrote `artifacts/ensemble_recipe.csv` (the DEPLOYED recipe's source); the
+  re-selection writes `ensemble_recipe_reselect_20260918.csv` instead, and the accepted recipe was
+  backed up to `ensemble_recipe_v1_accepted.csv`. Incomplete runs are skipped, not fatal.

@@ -128,6 +128,10 @@ def greedy_forward_per_label(target_matrices: dict[str, pd.DataFrame], truths: d
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidates", nargs="+", required=True)
+    parser.add_argument("--out", type=Path, default=None,
+                         help="recipe CSV to write (default: artifacts/ensemble_recipe.csv, which is the "
+                              "DEPLOYED recipe's source — pass a different path for any exploratory/"
+                              "re-selection run so it can't be overwritten by accident)")
     args = parser.parse_args()
 
     rsna_root = Path(os.environ.get("RSNA_ROOT", "."))
@@ -209,7 +213,7 @@ def main() -> None:
     for t in TARGETS:
         print(f"  {t}: {gold_per_label[t]:.4f}")
 
-    out_path = root / "ensemble_recipe.csv"
+    out_path = args.out or (root / "ensemble_recipe.csv")
     recipe_df.to_csv(out_path, index=False)
     print(f"\nWrote {out_path}")
 
