@@ -54,8 +54,31 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 MODEL_NAME = "BAAI/bge-m3"
+# The official repo ships only a pickled pytorch_model.bin, which transformers refuses to torch.load on
+# torch < 2.6 (CVE-2025-32434; this venv has 2.4). The HF safetensors-conversion bot's PR commit below
+# holds the same weights as model.safetensors — a format that cannot execute code — and is pinned by
+# commit hash so the run is reproducible. Provenance is third-party-converted, so embed() runs a
+# functional self-test (a translation pair must sit closer than an unrelated sentence) and the sha is
+# recorded in meta.json.
+SAFETENSORS_REVISION = "9a0624b896d81da7492a910ffa53731274b6cf3d"
 TARGETS = ["ACL", "MCL", "Medial Meniscus", "Lateral Meniscus", "Medial OA", "Lateral OA",
            "PF OA", "Effusion", "Synovitis", "Baker's", "Contusion", "Fracture"]
+
+
+def selftest(tok, model, device: str) -> None:
+    """A randomly-initialized or mis-loaded encoder would fail this: an English sentence and its Spanish
+    translation must be clearly closer than an unrelated finding."""
+    import torch
+    import torch.nn.functional as F
+    sents = ["Complete tear of the anterior cruciate ligament.",
+             "Rotura completa del ligamento cruzado anterior.",
+             "Small joint effusion without fracture or bone marrow edema."]
+    with torch.inference_mode():
+        enc = tok(sents, padding=True, truncation=True, max_length=128, return_tensors="pt").to(device)
+        e = F.normalize(model(**enc).last_hidden_state[:, 0].float(), dim=-1)
+    same, diff = float(e[0] @ e[1]), float(e[0] @ e[2])
+    print(f"selftest: cos(EN, ES translation)={same:.3f}  cos(EN, unrelated)={diff:.3f}", file=sys.stderr)
+    assert same > diff + 0.1, "encoder self-test failed — weights did not load correctly"
 
 
 def embed_reports(texts: list, device: str, max_len: int, batch_size: int) -> tuple[np.ndarray, int]:
@@ -63,9 +86,24 @@ def embed_reports(texts: list, device: str, max_len: int, batch_size: int) -> tu
     import torch.nn.functional as F
     from transformers import AutoModel, AutoTokenizer
 
+    from huggingface_hub import constants
+    from safetensors.torch import load_file
+    from transformers import AutoConfig
+
     tok = AutoTokenizer.from_pretrained(MODEL_NAME)
-    model = AutoModel.from_pretrained(MODEL_NAME, torch_dtype=torch.float16 if device == "cuda" else torch.float32)
+    # from_pretrained(revision=<PR commit sha>) is not resolvable (a conversion-PR commit is not reachable
+    # by hash like a branch), but transformers' own auto-conversion already put the file in the HF cache.
+    # Build the model from the OFFICIAL config and load those tensors directly, requiring zero missing keys.
+    st_path = (Path(constants.HF_HUB_CACHE) / "models--BAAI--bge-m3" / "snapshots" / SAFETENSORS_REVISION
+               / "model.safetensors")
+    assert st_path.exists(), f"{st_path} not found in the HF cache"
+    model = AutoModel.from_config(AutoConfig.from_pretrained(MODEL_NAME))
+    missing, unexpected = model.load_state_dict(load_file(str(st_path)), strict=False)
+    print(f"safetensors load: {len(missing)} missing, {len(unexpected)} unexpected keys {unexpected[:3]}", file=sys.stderr)
+    assert not missing, f"missing keys: {missing[:5]}"
+    model = model.to(torch.float16 if device == "cuda" else torch.float32)
     model.to(device).eval()
+    selftest(tok, model, device)
     order = np.argsort([len(t) for t in texts])
     out = np.zeros((len(texts), model.config.hidden_size), dtype=np.float32)
     n_truncated = 0
@@ -111,7 +149,7 @@ def main() -> None:
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--max-len", type=int, default=2048)
     ap.add_argument("--batch-size", type=int, default=8)
-    ap.add_argument("--abtt-d", type=int, default=10, help="number of top principal components removed")
+    ap.add_argument("--abtt-d", type=int, default=5, help="number of top principal components removed")
     ap.add_argument("--diagnostics", action="store_true")
     args = ap.parse_args()
 
@@ -132,7 +170,7 @@ def main() -> None:
         np.save(raw_path, raw)
         (out_dir / "uids.txt").write_text("\n".join(uids))
         (out_dir / "meta.json").write_text(json.dumps({
-            "model": MODEL_NAME, "license": "MIT", "pooling": "CLS + L2 normalize", "max_len": args.max_len,
+            "model": MODEL_NAME, "revision": SAFETENSORS_REVISION, "license": "MIT", "pooling": "CLS + L2 normalize", "max_len": args.max_len,
             "n_reports": len(uids), "n_truncated_at_max_len": int(n_trunc)}, indent=1))
         print(f"embedded {raw.shape}, {n_trunc} reports truncated at {args.max_len} tokens")
     assert np.isfinite(raw).all()
@@ -171,7 +209,10 @@ def main() -> None:
             line += (f" | language R2 raw {r2_raw:.3f} -> resid {r2_res:.3f} | "
                      f"report-embedding->label probe macro AUC (val fold) raw {aucs['raw']:.3f} resid {aucs['resid']:.3f}")
         print(line)
-    print(f"wrote {out_dir}/fold[0-4]_target.npz (train-split studies only)")
+    (out_dir / "targets_meta.json").write_text(json.dumps({
+        "abtt_d": args.abtt_d, "fit": "per fold, on that fold's train-split embeddings only",
+        "d_selection": "smallest D with crude-language R2 <= 0.05 (scripts/sweep_abtt_d.py, chosen before any image result)"}, indent=1))
+    print(f"wrote {out_dir}/fold[0-4]_target.npz (train-split studies only), D={args.abtt_d}")
 
 
 if __name__ == "__main__":

@@ -1651,3 +1651,37 @@ head, and re-check gold-58.
 
 **Guardrail (user):** the deployed ensemble + exp008 notebook stay frozen and submittable; exp016 is
 upside-only; if it does not clear the bar by **Oct 15**, we ship what we have.
+
+### exp016 amendment + launch record (2026-09-20, before any image-model result exists)
+**Amendment to the pre-registration: target design D = 5 (not 10).** The build's diagnostics on the D=10
+targets showed the top-10 removal fixed the language shortcut (language R² 0.15 -> 0.025) but also cost
+label-relevant signal (report-embedding -> label probe macro AUC 0.889-0.897 raw -> 0.814-0.861; fold 0
+lost 0.075). Since D is a target-design choice that uses only report text and report-derived labels — no
+image result — it was set by a rule fixed before running the sweep (`scripts/sweep_abtt_d.py`): smallest
+D with crude-language R² <= 0.05. Sweep (folds 0 / 3): D=2 0.058/0.060, D=3 0.054/0.052, **D=5 0.043/0.042**,
+D=7 0.039/0.032, D=10 0.029/0.022 -> D=5. Final targets, all five folds: language R² 0.042-0.043 (raw
+0.15), probe AUC 0.869-0.887 (raw 0.888-0.897). Everything else in the pre-registration — arms, weights,
+the +0.0082 bar, the caveats, the controls-if-cleared — is unchanged.
+
+**Text encoder loading (two failures on the way, both mine).** (1) BGE-M3 ships only a pickled `.bin`,
+which `transformers` refuses to `torch.load` on torch 2.4 (CVE-2025-32434). (2) A conversion-PR commit is
+not resolvable by hash via `from_pretrained`. Fix: load the already-cached 2.27GB `model.safetensors`
+(conversion-bot PR commit `9a0624b8...`, a format that cannot execute code) directly into a model built
+from the official config, requiring zero missing keys. Third-party-converted, so it is functionally
+verified: 0 missing / 0 unexpected keys; EN-vs-ES-translation cosine 0.854 vs. 0.495 for an unrelated
+sentence (assertion requires a gap > 0.1). 4,407 reports embedded, 0 truncated at 2,048 tokens.
+
+**Pre-flight (smoke test, real data, 2 folds x 2 configs): passed.** Targets finite and unit-norm;
+a validation-fold study and a gold-58 study each **refused** by the dataset when smuggled into the
+targets file; shuffle control keeps 0/200 studies on their own report; real GPU batch runs forward +
+joint loss + backward with aux cosine loss ~1.0 at init; eval `forward()` unaffected.
+
+**Launched, all via `safe_sbatch.py`, `--exclude=g005,g006`** (both hold no-GRES co-tenant jobs):
+- exp016a (weight 0.1): job **25776** (`--array=0-4`), chained follow-up session **25778**.
+- exp016b (weight 0.5): job **25777**, chained follow-up **25779** (folds 3-4 briefly queued behind the
+  8-GPU cap).
+- Verdict job **25787** (CPU, `afterany` of both chains): runs `exp016_verdict.py` (the mechanical bar)
+  and `compare_runs.py` -> `artifacts/exp016_verdict.md`, `artifacts/exp016_compare_vs_exp006.md`.
+- An aborted first pipeline (jobs 25766-25772) was cancelled by explicit job ID after the embedder
+  failed; the failed embedding runs (25766, 25773) wrote nothing.
+- Expected ~1-1.5 days wall (exp006-sized runs, ~7h/session x 2 sessions, 10 tasks under an 8-GPU cap).
