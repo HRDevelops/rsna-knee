@@ -290,6 +290,16 @@ that failure mode with data loss instead of a broken import.
 - **Laterality-swap TTA**: measured OOF-negative (−0.0014) on the final ensemble.
 - **Per-label ensemble recipe** (vs. the simpler global recipe): only +0.0010 OOF, below the 0.002
   bar for the added complexity.
+- **Resolution and slice count** (exp015 448px on a genuinely rebuilt 0.2571mm/px cache; exp010
+  T=32): both **null** vs. the same-recipe exp006 baseline (solo OOF macro −0.0001 each; paired
+  cluster-bootstrap 95% CI ≈ [−0.0023, +0.0025], so effects larger than ~+0.0025 macro are ruled out).
+  Small-finding labels (meniscus, cartilage) did not turn out to be resolution-limited at 384px/T=24.
+- **Anatomy-aware ACL init** (exp012, sagittal-biased ACL query): ACL +0.0005 (nothing), MCL −0.0122;
+  macro +0.0010, CI spans zero. ACL's low OOF was proxy-label noise, not a vision deficit (gold-58 ACL
+  AUC ~0.988 for both report labels and image ensemble), so there was little for a head change to fix.
+- **A 6-member re-selected ensemble** {exp012, 003, 006, 015, 010, 005}: +0.0020 OOF over the deployed
+  3-member recipe (CI [+0.0011, +0.0027]) — statistically nonzero but in-sample-selected and tiny
+  against a ~2.9x inference cost, so not adopted on that evidence alone.
 
 ## 11. Final leaderboard result
 

@@ -1509,3 +1509,61 @@ on g002/g003.
   previously always wrote `artifacts/ensemble_recipe.csv` (the DEPLOYED recipe's source); the
   re-selection writes `ensemble_recipe_reselect_20260918.csv` instead, and the accepted recipe was
   backed up to `ensemble_recipe_v1_accepted.csv`. Incomplete runs are skipped, not fatal.
+
+## RESULTS: exp010 / exp012 / exp015 vs exp006, and ensemble re-selection (2026-09-20)
+
+All 15 folds finished (exp010 T=32, exp012 ACL-prior, exp015 448px). **Integrity verified**: every
+fold logged `epoch 24` in its final session, 0 quota-guard skips, 0 early stops; each fold has
+`best.pt` + `oof.parquet` + `gold58_predictions.parquet`. (Total wall time 09-18 -> 09-19; the
+automatic finisher, job 25580, ran 09-19 14:13.) Files: `artifacts/final_compare_vs_exp006.md`,
+`final_ensemble_reselection.txt`, `final_bootstrap_gain.md`, `ensemble_recipe_reselect_20260918.csv`
+(the deployed `ensemble_recipe.csv` was NOT touched; backup `ensemble_recipe_v1_accepted.csv`).
+
+### Solo runs vs. exp006 (OOF vs labels_v2_final, non-gold; delta vs exp006)
+| run | macro | ACL | MCL | MedMen | LatMen | MedOA | LatOA | PFOA | Effusion | Synovitis | Baker's | Contusion | Fracture |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| exp006 (384/T=24) | 0.8681 | 0.8356 | 0.8247 | 0.9263 | 0.8711 | 0.8960 | 0.8592 | 0.8381 | 0.9042 | 0.8225 | 0.8846 | 0.8591 | 0.8956 |
+| exp010 (T=32) Δ | −0.0001 | +0.0003 | −0.0027 | +0.0029 | +0.0024 | −0.0010 | +0.0005 | −0.0019 | −0.0008 | +0.0009 | +0.0021 | −0.0019 | −0.0017 |
+| exp012 (ACL prior) Δ | +0.0010 | +0.0005 | −0.0122 | −0.0004 | +0.0026 | +0.0004 | +0.0050 | +0.0033 | −0.0007 | +0.0032 | +0.0037 | −0.0007 | +0.0077 |
+| exp015 (448px) Δ | −0.0001 | −0.0027 | −0.0068 | −0.0009 | +0.0086 | +0.0001 | −0.0034 | +0.0013 | +0.0027 | +0.0022 | +0.0057 | −0.0027 | −0.0056 |
+
+gold-58 tripwire (n=58, noisy) macro: exp006 0.8897, exp010 0.8914, exp012 0.8922, exp015 0.8926 —
+same picture, all within noise; ACL on gold-58 stays ~0.97-0.98 for every run.
+
+**Noise (paired cluster bootstrap over 3,681 report clusters, 300 reps, `scripts/bootstrap_ensemble_gain.py`)**:
+macro bootstrap SD ≈ 0.0041. Solo deltas vs exp006: exp010 −0.0001 [−0.0022, +0.0025]; exp012 +0.0010
+[−0.0010, +0.0032] (P>0 = 0.84); exp015 −0.0001 [−0.0024, +0.0025]. **None distinguishable from zero.**
+
+**Conclusions**
+1. **Resolution (448px, genuine finer spacing) and slice count (T=32) do not help** — the "biggest
+   untested axis" is closed: at this recipe, effects bigger than about +0.0025 macro are ruled out.
+   Per-label movement (e.g. exp015 Lateral Meniscus +0.0086, MCL −0.0068) is the size of per-label
+   noise and should not be read as a real label-specific effect. Combined with the scale ladder
+   (ViT-S -> ViT-B was worth ~+0.005 twice), image-side capacity levers are now saturated around a
+   solo OOF macro of ~0.868-0.869.
+2. **The anatomy-aware ACL init did not help ACL** (+0.0005) and hurt MCL (−0.0122); its +0.0010 macro
+   is within noise. Consistent with the 2026-09-18 ACL conclusion (ACL's gap was mostly label noise).
+   Per the standing decision, ACL work stops here.
+
+### Ensemble re-selection over {exp003, 005, 006, 010, 012, 015} (greedy, vs labels_v2_final)
+Solo: 003 0.8536, 005 0.8631, 006 0.8681, 010 0.8680, 012 0.8691, 015 0.8680. **Global greedy**:
++012 -> 0.8691, +003 -> 0.8725, +006 -> 0.8751, +015 -> 0.8761, +010 -> 0.8763, +005 -> 0.8764 —
+**all six members made the cut, final OOF macro 0.8764** (deployed 3-member recipe: 0.8744; gold-58
+tripwire of the new recipe 0.8949). Per-label selection 0.8776 (+0.0012 over global, below the 0.002
+bar -> recommend global, as before). Paired bootstrap vs the deployed recipe: **6-member +0.0020 [+0.0011,
++0.0027]**; **3-member {012, 003, 006} +0.0008 [−0.0001, +0.0016]**.
+
+**How to read it (my assessment, not a decision):** the 6-member gain is sampling-significant but
+(a) selected in-sample — greedy over 6 candidates plus a per-label max over prob-mean/rank-mean both
+pick winners on the same data, and the bootstrap does not correct for that, so the true out-of-sample
+gain is smaller; (b) marginal steps 4-6 add +0.0010, +0.0002, +0.0001; (c) 0.002 is half of one
+bootstrap SD of the metric itself and well below any public-LB resolution we have; (d) costs ~2.9x the
+model inference of the deployed ensemble (16 vs 7 ViT-S-equivalent units before the extra T=32/448
+cost) plus three new ~2.4GB weight datasets. The gain mostly reflects more same-family members with
+different seeds/inits, not new information. The deployed recipe is unchanged pending a decision.
+
+### Unrecognized jobs on this account
+`sacct` for husnain.rasool since 09-18 also lists ~70 short (1-9 min) jobs named `rv_*`
+(`rv_lr_pretrained_*`, `rv_organa_*`, `rv_p224_*`, `rv_seeds_*`, ...) that I did not launch — presumably
+other work of the user's on the same account. All COMPLETED, no action taken; quota accounting is
+consistent without them (567GB used = 385GB + 154GB cache + ~28GB of new checkpoints).
