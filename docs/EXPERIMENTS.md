@@ -1567,3 +1567,87 @@ different seeds/inits, not new information. The deployed recipe is unchanged pen
 (`rv_lr_pretrained_*`, `rv_organa_*`, `rv_p224_*`, `rv_seeds_*`, ...) that I did not launch — presumably
 other work of the user's on the same account. All COMPLETED, no action taken; quota accounting is
 consistent without them (567GB used = 385GB + 154GB cache + ~28GB of new checkpoints).
+
+## Decisions 2026-09-20: null results accepted; housekeeping; exp016 PRE-REGISTRATION
+
+**Null results, logged as such.** exp010 (T=32), exp015 (448px) and exp012 (ACL anatomy-aware init) are
+**null** vs. exp006 (macro −0.0001 / −0.0001 / +0.0010; all paired 95% CIs span zero). **The resolution
+hypothesis was tested properly — a genuinely rebuilt 0.2571mm/px cache, same recipe/folds/seed, all five
+folds, full 25 epochs — and rejected**: effects larger than about +0.0025 macro are ruled out. The
+earlier 400-study 384-vs-448 comparison remains void and is not evidence either way. Slice count (T=32)
+likewise rejected. ACL work is closed.
+
+**Ensemble: no probe on the six-member re-selection; the deployed recipe stays.** Reasons (user decision,
+consistent with the analysis above): the +0.0020 OOF gain was selected in-sample, ~2.9x the inference cost,
+and would break the efficiency-track economics. The deployed 3-member ensemble ({exp006, exp003, exp005})
+and the exp008 efficiency notebook are **frozen and submittable throughout**; nothing below touches them.
+
+**Housekeeping.** `data/cache_448` (154GB) deleted after verifying an empty queue; free quota 82.8 -> 235.9GB
+(650GB limit). Rebuild if ever needed: `slurm/cache_build_448.sbatch` (~10 min on the CPU partition;
+exp014/exp015 configs still point at it). The ~70 `rv_*` jobs on this account are not mine (presumably the
+user's other work) and were left alone.
+
+### exp016 — multimodal (report-text) training. PRE-REGISTERED before any run exists.
+Motivation: each report has been used as 12 bits; ~977 characters of text per study went unused. This is the
+one lever in the project that adds *information* rather than capacity.
+
+**Deviation from the requested Stage 1 (must be read first): pretraining is fold-safe, not "on all 4,407
+studies".** Contrastive/auxiliary training on a validation study's own (image, report) pair puts that
+study's report information into the encoder before the study is scored. Labels are derived from reports, so
+this inflates OOF against report-derived labels — and reports do not exist at test time, so the inflation
+would not transfer to the LB. The head-to-head vs. exp006 would then be invalid. Every report-derived
+training signal therefore uses train-fold studies only; gold-58 is excluded everywhere. (A contrastive
+Stage 1 done this way needs one pretraining run **per fold**, 5x the stage-1 cost — a reason it is second.)
+
+**Variant chosen first: joint auxiliary report-embedding prediction, not contrastive.** Why: (1) fold-safe
+by construction and a single stage — the cost is one exp006-sized run, not 5 pretrainings + 5 fine-tunes;
+(2) the recipe stays *identical* to exp006 apart from one added loss, so the comparison is clean;
+(3) no InfoNCE batch-design fiddling — with ~a dozen languages, random in-batch negatives are mostly
+different-language/site and solved by recognizing site, so a contrastive run would also need
+language/site-grouped hard-negative batching. Contrastive stays available as the follow-up if this shows
+any signal. Prior, stated honestly: every lever tried so far moved <= ~0.005, so the chance this clears
++0.0082 is low; the case for it is that the report text is new information.
+
+**Text encoder: frozen multilingual sentence encoder (BAAI/bge-m3), not translate-to-English first.**
+MIT license (verified on the model card), 100+ languages, 8,192-token context (reports run to ~4.7k
+characters), dense embedding = L2-normalized [CLS]. Translation would cost a 4,407-report LLM pass
+(hours) and add translation noise/hallucination on medical text; a cross-lingually aligned encoder puts
+the same finding in different languages near each other, which is what the image side can learn. Used only
+at training time to make targets — the deployed image model contains no text component.
+
+**Target construction** (`scripts/build_report_embeddings.py`): per fold k, fit on that fold's train-split
+embeddings only: subtract the mean, remove the top-10 principal components ("all-but-the-top", Mu &
+Viswanath 2018), L2-normalize. Reason: the dominant directions of a multilingual embedding matrix encode
+language and site/template style, and images carry scanner/site cues, so regressing onto the raw embedding
+could be minimized by recognizing the site instead of the pathology. The build prints how much variance
+crude language groups explain before vs. after removal, and a report-embedding -> label probe, so the
+shortcut concern and the targets' label content are *measured*, not assumed. Files:
+`artifacts/report_emb/fold{k}_target.npz` contain train-split studies ONLY; the dataset additionally
+**asserts** no validation-fold or gold-58 study is present (tested on a real batch: smoke test smuggles
+one in and requires the refusal).
+
+**Model/loss**: optional `aux_head` on `SlotModel` (LayerNorm-Linear-GELU-Linear -> 1024) on the masked
+mean of the cross-slot context; loss = label BCE + weight x (1 − cosine). `forward()` (all eval/inference)
+never touches it. Verified locally: with the head off the model is **byte-identical** to the committed one
+(same state-dict keys/values, identical outputs); with it on, the non-aux weights and `forward()` are
+unchanged and gradients reach both the head and the backbone. Deployment note: strip `aux_head.*` from any
+`best.pt` before staging (the Kaggle notebooks load strictly).
+
+**Arms (2, fixed in advance):** `exp016a` weight 0.1, `exp016b` weight 0.5 — otherwise IDENTICAL to exp006
+(ViT-B, labels_v3_candidate, same folds/seed, 384px, T=24, 25 epochs); verified programmatically that the
+configs differ from exp006 only in `experiment` and `aux`. Two weights bracket the plausible range so a
+null is not just a badly chosen weight; no tuning sweep (single-fold results can't discriminate ~0.008).
+
+**Bar (user-specified, applied mechanically by `scripts/exp016_verdict.py`):** an arm counts as real iff its
+solo OOF macro gain over exp006 is **> +0.0082** (2 x the 0.0041 cluster-bootstrap SD). Reported alongside:
+paired 95% CI, per-label deltas with CIs, gold-58 tripwire. **Caveats fixed before results:** (1) two arms
+=> 'best of two' is mildly optimistic; (2) OOF is scored against *report-derived* labels, and a model trained
+to predict report text can gain on that proxy by absorbing report idiosyncrasies (mild-disease over-calling,
+the very bias this project fights) that the image-reviewed truth does not share — gold-58 is the only clean
+check and n=58 cannot resolve ~0.008; (3) one seed per arm. **If an arm clears the bar, before adopting it:**
+run the shuffled-report control (same head/loss, reports assigned to the wrong studies — the dataset already
+supports `aux.shuffle_control_seed`) to show the gain comes from report *content*, not from having an extra
+head, and re-check gold-58.
+
+**Guardrail (user):** the deployed ensemble + exp008 notebook stay frozen and submittable; exp016 is
+upside-only; if it does not clear the bar by **Oct 15**, we ship what we have.

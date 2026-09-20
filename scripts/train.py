@@ -284,6 +284,12 @@ def main() -> None:
         fold=args.fold,
         distill_labels_parquet=Path(distill_labels) if distill_labels else None,
     )
+    # exp016 auxiliary report-embedding objective (optional; absent for every earlier experiment).
+    # aux.targets holds a `{fold}` placeholder -> one fold-specific, TRAIN-SPLIT-ONLY targets file.
+    aux_cfg = cfg.get("aux")
+    if aux_cfg:
+        common_kwargs["aux_targets_npz"] = Path(str(aux_cfg["targets"]).format(fold=args.fold))
+        common_kwargs["aux_shuffle_seed"] = aux_cfg.get("shuffle_control_seed")
     train_ds = RSNAKneeDataset(split="train", **common_kwargs)
     val_ds = RSNAKneeDataset(split="val", **common_kwargs)
     gold_ds = RSNAKneeDataset(split="gold", **common_kwargs)
@@ -308,7 +314,8 @@ def main() -> None:
         # keys arrive as ints already since YAML mapping keys aren't quoted in our configs.
         target_slot_prior = cfg["model"].get("target_slot_prior")
         model = SlotModel(cfg["model"]["backbone"], num_targets=cfg["model"]["num_targets"],
-                           target_slot_prior=target_slot_prior).to(device)
+                           target_slot_prior=target_slot_prior,
+                           aux_dim=(train_ds.aux_dim if aux_cfg else None)).to(device)
     param_groups = get_param_groups_fn(model, cfg["train"]["lr"], cfg["train"]["backbone_lr_mult"],
                                         cfg["train"]["weight_decay"])
     optimizer = torch.optim.AdamW(param_groups)
@@ -352,6 +359,7 @@ def main() -> None:
     for epoch in range(start_epoch, epochs):
         model.train()
         epoch_loss = 0.0
+        epoch_aux = 0.0
         n_batches = 0
         optimizer.zero_grad(set_to_none=True)
         window_has_nan = False
@@ -362,7 +370,10 @@ def main() -> None:
             weights = batch["weights"].to(device, non_blocking=True)
 
             with torch.autocast(device_type="cuda", dtype=autocast_dtype):
-                logits = model(volumes, mask)
+                if aux_cfg:
+                    logits, aux_pred = model.forward_with_aux(volumes, mask)
+                else:
+                    logits = model(volumes, mask)
                 if cfg["train"]["loss"] == "kl_bce_mix":
                     distill_labels = batch["distill_labels"].to(device, non_blocking=True)
                     loss = kl_bce_mix_loss(logits, labels, weights, distill_labels,
@@ -371,6 +382,13 @@ def main() -> None:
                     loss = weighted_bce_loss(logits, labels, weights)
                 else:
                     loss = nn.functional.binary_cross_entropy_with_logits(logits, labels)
+            if aux_cfg:
+                # cosine loss vs. the (all-but-the-top residualized, L2-normalized) report embedding,
+                # in float32 outside autocast precision. Added to — not replacing — the label loss.
+                aux_target = batch["aux_target"].to(device, non_blocking=True)
+                aux_loss = (1.0 - nn.functional.cosine_similarity(aux_pred.float(), aux_target.float(), dim=-1)).mean()
+                loss = loss + float(aux_cfg["weight"]) * aux_loss
+                epoch_aux += aux_loss.item()
             # NaN/Inf guard, accumulation-aware: a poisoned micro-batch's gradient, once summed
             # into the accumulator, corrupts every other micro-batch's gradient in the SAME window
             # (unlike the grad_accum_steps=1 case, it can't be skipped in isolation) — so flag the
@@ -429,7 +447,8 @@ def main() -> None:
                                  ckpt_path, min_gb=3.0)
                 return
 
-        print(f"epoch {epoch}: train_loss={epoch_loss / max(n_batches, 1):.4f}", file=sys.stderr)
+        print(f"epoch {epoch}: train_loss={epoch_loss / max(n_batches, 1):.4f}"
+              + (f" aux_cos_loss={epoch_aux / max(n_batches, 1):.4f}" if aux_cfg else ""), file=sys.stderr)
 
         # "last" checkpoint only — this is the sole checkpoint file per fold (overwritten every
         # epoch, not accumulated), so there is no per-epoch retention to prune. "best" (lean,

@@ -131,6 +131,8 @@ class RSNAKneeDataset(Dataset):
         fold: int,
         split: str,  # "train" | "val" | "gold"
         distill_labels_parquet: Path | None = None,
+        aux_targets_npz: Path | None = None,
+        aux_shuffle_seed: int | None = None,
     ):
         assert split in ("train", "val", "gold")
         self.cfg = cfg
@@ -168,6 +170,30 @@ class RSNAKneeDataset(Dataset):
             pd.read_parquet(distill_labels_parquet).set_index("study_uid")
             if distill_labels_parquet is not None else None
         )
+
+        # exp016 (2026-09-20): optional per-study auxiliary regression target (a frozen text encoder's
+        # embedding of the study's report). FOLD-SAFETY IS ENFORCED HERE, not trusted: the npz must
+        # contain only studies from this fold's TRAIN split, so a validation-fold or gold-58 report can
+        # never become a training target (which would leak report information into the very OOF the
+        # experiment is judged on — reports do not exist at test time). Only the train split loads it.
+        # aux_shuffle_seed permutes which report each study receives (falsification control: same head,
+        # same loss, wrong reports).
+        self.aux_dim = 0
+        self.aux_map: dict[str, np.ndarray] = {}
+        if aux_targets_npz is not None:
+            z = np.load(aux_targets_npz, allow_pickle=False)
+            aux_uids, aux_target = [str(u) for u in z["uids"]], z["target"].astype(np.float32)
+            forbidden = set(folds_df.loc[(folds_df["fold"] == fold) | (folds_df["fold"] == -1), "study_uid"])
+            leaked = forbidden.intersection(aux_uids)
+            assert not leaked, (f"{len(leaked)} validation/gold-58 studies present in aux targets "
+                                f"{aux_targets_npz} — refusing (fold-safety)")
+            if aux_shuffle_seed is not None:
+                aux_target = aux_target[np.random.RandomState(aux_shuffle_seed).permutation(len(aux_uids))]
+            self.aux_dim = int(aux_target.shape[1])
+            if split == "train":
+                self.aux_map = dict(zip(aux_uids, aux_target))
+                missing = study_uids.difference(self.aux_map)
+                assert not missing, f"{len(missing)} train studies have no aux target in {aux_targets_npz}"
 
         final_side_df = pd.read_csv(final_side_csv)
         self.final_side_map = final_side_df.set_index("study_uid")["final_side"].to_dict()
@@ -299,6 +325,8 @@ class RSNAKneeDataset(Dataset):
             "labels": probs,          # [12] soft targets
             "weights": weights,       # [12] per-target confidence weight
             "distill_labels": distill_probs,  # [12] ensemble-teacher soft targets (exp008 KL term)
+            "aux_target": (torch.from_numpy(self.aux_map[study_uid]) if self.aux_map
+                           else torch.zeros(1, dtype=torch.float32)),  # exp016 report embedding (train split only)
         }
 
     def _sample_geometric_params(self) -> dict:
@@ -335,4 +363,5 @@ def collate_fn(batch: list[dict]) -> dict:
         "labels": torch.stack([b["labels"] for b in batch]),
         "weights": torch.stack([b["weights"] for b in batch]),
         "distill_labels": torch.stack([b["distill_labels"] for b in batch]),
+        "aux_target": torch.stack([b["aux_target"] for b in batch]),
     }

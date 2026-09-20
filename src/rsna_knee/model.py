@@ -62,6 +62,7 @@ class SlotModel(nn.Module):
         slot_heads: int = 4,
         pretrained: bool = True,
         target_slot_prior: dict[int, list[int]] | None = None,
+        aux_dim: int | None = None,
     ):
         super().__init__()
         # dynamic_img_size=True: DINOv2 timm configs default to a fixed 518x518 img_size and
@@ -130,6 +131,19 @@ class SlotModel(nn.Module):
         _small_gain_init_attn(self.target_attn)
         self.head = nn.Linear(D, 1)
 
+        # exp016 (2026-09-20): optional auxiliary head predicting a frozen text-encoder embedding of
+        # the study's report from the study-level image embedding (masked mean of the cross-slot
+        # context). TRAINING-ONLY: reports don't exist at test time and forward() never touches this
+        # head, so eval/inference numerics are identical with or without it. None (the default) builds
+        # nothing, so every existing config/checkpoint (exp001-015) is unaffected. Its parameters
+        # appear in the state dict as `aux_head.*` only when enabled — strip them before staging any
+        # such checkpoint for the Kaggle notebooks (they load with a strict load_state_dict).
+        self.aux_head = None
+        if aux_dim is not None:
+            self.aux_head = nn.Sequential(nn.LayerNorm(D), nn.Linear(D, D), nn.GELU(), nn.Linear(D, aux_dim))
+            nn.init.trunc_normal_(self.aux_head[3].weight, std=SMALL_GAIN_STD)
+            nn.init.zeros_(self.aux_head[3].bias)
+
     def encode_series(self, volumes: torch.Tensor, mask: torch.Tensor, chunk_size: int = 128) -> torch.Tensor:
         """volumes: [B, S, T, H, W] single-channel, mask: [B,S] bool -> series embeddings [B, S, D].
 
@@ -165,8 +179,7 @@ class SlotModel(nn.Module):
         series_embed[valid_idx] = seq[:, 0].to(series_embed.dtype)
         return series_embed.view(B, S, D)
 
-    def forward(self, volumes: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        """volumes: [B,6,T,H,W], mask: [B,6] bool (True=present) -> logits [B, num_targets]."""
+    def _forward_core(self, volumes: torch.Tensor, mask: torch.Tensor):
         series_embed = self.encode_series(volumes, mask)  # [B,6,D]
         series_embed = series_embed + self.slot_embed.weight.unsqueeze(0)
 
@@ -176,7 +189,19 @@ class SlotModel(nn.Module):
         B = volumes.shape[0]
         q = self.target_queries.unsqueeze(0).expand(B, -1, -1)
         pooled, _ = self.target_attn(q, slot_ctx, slot_ctx, key_padding_mask=key_padding_mask)
-        return self.head(pooled).squeeze(-1)
+        return self.head(pooled).squeeze(-1), slot_ctx
+
+    def forward(self, volumes: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """volumes: [B,6,T,H,W], mask: [B,6] bool (True=present) -> logits [B, num_targets]."""
+        return self._forward_core(volumes, mask)[0]
+
+    def forward_with_aux(self, volumes: torch.Tensor, mask: torch.Tensor):
+        """Training-time only (exp016): (logits [B,num_targets], predicted report embedding [B,aux_dim])."""
+        assert self.aux_head is not None, "model was built without aux_dim"
+        logits, slot_ctx = self._forward_core(volumes, mask)
+        m = mask.unsqueeze(-1).to(slot_ctx.dtype)
+        study_embed = (slot_ctx * m).sum(dim=1) / m.sum(dim=1).clamp(min=1.0)
+        return logits, self.aux_head(study_embed)
 
 
 def get_param_groups(model: SlotModel, lr: float, backbone_lr_mult: float, weight_decay: float) -> list[dict]:
