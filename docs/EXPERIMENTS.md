@@ -1992,3 +1992,10 @@ comparable across pipelines (a B3 MIL model scored 0.903 public from a lower OOF
 values here are ~0.89-0.91 vs ~0.87-0.89 for exp006) but was NEVER used for selection this time, and it agrees in sign
 and rough size with the OOF gain. One seed per fold. Only a public-LB probe settles cross-pipeline comparison: probe #3
 is the user's Submit click.
+
+**exp018 Kaggle datasets uploaded (2026-09-21, via the local Kaggle CLI, OAuth as hrdevelops; both PRIVATE, status `ready`).**
+`hrdevelops/rsna-knee-exp018-code` (4 files: `__init__.py`, `preprocess.py`, `wmil.py`, `infer_wmil.py`; identical to the repo's
+`src/rsna_knee/`) and `hrdevelops/rsna-knee-exp018-weights` (`fold0-4_best.pt`, 292,862,052 bytes each; SHA-256 identical to the HPC
+staging copies). Separate from `rsna-knee-code` so the frozen notebooks' inputs are unchanged. Local copies in `kaggle_staging/`
+(gitignored). Next: attach both + the competition data to a new notebook from `notebooks/submit-exp018.ipynb`, dry-run it on Kaggle
+(first run against Kaggle's timm; gives the real T4 speed), then probe #3 (the user's Submit click).

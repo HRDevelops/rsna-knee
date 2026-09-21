@@ -11,3 +11,4 @@ kaggle.json
 .env
 .claude/
 kernels/
+kaggle_staging/
