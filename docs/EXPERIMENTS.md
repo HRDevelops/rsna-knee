@@ -1855,3 +1855,16 @@ initialisation, ConvNeXt, 3D, an auxiliary text objective, TTA and ensemble comp
 moved OOF beyond noise were (1) ViT-B over ViT-S (+0.005), (2) v3 noisy-student labels (+0.014) and (3)
 ensembling (+0.006 over the best solo, 0.8744 vs 0.8681). Everything tried after the v3/ViT-B/ensemble recipe
 landed sits inside about +/-0.004 of exp006. Plateau at OOF ~0.868 solo / 0.874 ensemble; public LB 0.893 / 0.885.
+
+## 2026-09-21 — public benchmark audit (intelligence only; modeling frozen)
+
+Report: `artifacts/public_benchmark_audit.md` (local; 18 third-party kernels pulled to gitignored `kernels/`, none executed).
+Findings logged: (1) efficiency-board rank 425/3,976 is an efficiency-metric rank, not an AUC rank — 2,450 of 3,976 entries
+(62%) have higher public AUC than 0.885, 730 have >= 0.94 (a public-fork cluster, LB-tuned). (2) A DINOv2 slot-attention family
+plateaus at ~0.89 publicly (pilkwang 20-member 0.891 vs ours 0.893). (3) Public evidence for a design-level gap: a single
+CoAtNet-2 with 3-adjacent-slice RGB windows + per-finding attention MIL scores 0.924 (no ensemble/TTA); a single EfficientNet-B3
+MIL scores 0.903 from a lower OOF than ours (OOF is not comparable across pipelines). (4) Untested difference: public crops are
+130-140 mm; ours is 115 mm (exp015 changed resolution, not FOV). No detector/bbox datasets in any kernel's sources. Caveats:
+0.94x numbers are LB-tuned forks; 0.924 model selected its epoch on gold-58. No action taken; no probes. Access note: the Kaggle
+CLI ignored the OAuth login because a stale legacy `~/.kaggle/kaggle.json` took precedence; worked around with a scratch
+`KAGGLE_CONFIG_DIR` (deleted afterwards), user files untouched.
