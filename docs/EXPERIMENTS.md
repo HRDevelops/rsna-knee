@@ -1721,3 +1721,46 @@ finished; nothing of ours is running or queued (`rv_*` jobs are not ours and wer
 
 **Housekeeping note.** `exp016*/fold*/best.pt` contain `aux_head.*` weights; strip them before any Kaggle
 staging (strict load) if an exp016 member is ever used. Quota at check: 445 GiB / 650 GiB.
+
+## 2026-09-21 — exp017 (severity-aware ordinal targets): step 1 audit result = STOP, no grade field
+
+Motivation (user): report over-calling of mild/trace findings vs. expert-panel severity thresholds is the one
+known mechanism left after exp016; hypothesis is that 3 cumulative targets P(>=mild/moderate/severe) with
+inference on P(>=moderate) would align the model with the panel threshold. Step 1 was a zero-GPU audit of
+whether the existing extractions preserve a per-finding grade; instruction was to STOP and report if not.
+Script `scripts/audit_severity.py`, output `artifacts/severity_audit.md` (HPC).
+
+**Finding.** The extraction schema (`rubric_v1/v2`, `label_reports.py`) stores per finding only
+`present` {yes,no,uncertain}, `probability`, `severity_phrase`, `evidence_quote`, `imputed`. There is **no
+ordinal grade field**. `severity_phrase` is a short free-text quote in the report's own language (Spanish,
+Croatian, Greek, Turkish, Bulgarian, Dutch, ...), and is frequently just the finding name ("Derrame",
+"Rotura de menisco interno"). Applying a multilingual keyword lexicon (en/es/fr/de/nl/it/pt; does not cover
+hr/bg/el/tr) to the Qwen v2 phrases of v3-positive studies, a grade word is found in only:
+ACL 40%, MCL 34%, Med Men 19%, Lat Men 16%, Med OA 31%, Lat OA 33%, PF OA 41%, Effusion 44%, Synovitis 13%,
+Baker's 25%, Contusion 8%, Fracture 14% of positives. Where a grade is found, the mild/trace share is:
+ACL 0%, MCL 14%, Med Men 20%, Lat Men 45%, Med OA 19%, Lat OA 7%, PF OA 14%, Effusion 43%, Synovitis 71%,
+Baker's 67%, Contusion 58%, Fracture 87% — but those are conditioned on the 8-44% that are gradable, so the
+strict "% of current positives that are mild" is NOT measurable from what we stored (a floor, at most ~0-19%
+per label, is all the data supports).
+
+**Two further consequences.** (1) The rubric already sends mild/grade-1/trace to the *uncertain* band
+(p = 0.20-0.35), so v3 positives (p >= 0.5) are already enriched for above-threshold findings; the
+mild-overcalling the ordinal head targets was partly removed at label time (that is where the v2->v3
+gains came from), so remaining headroom from a 3-level head is unclear. (2) Building real {0,1,2,3}
+targets needs a NEW LLM extraction pass with a grade field (~4,407 reports x 2 models on the H100s), not a
+re-parse — which the user's instruction reserves for confirmation.
+
+**Status: exp017 STOPPED at step 1; no model code changed, nothing trained or queued.** Decision pending
+user: (a) authorise a grade-extraction LLM pass (rubric_v3 with a 4-level grade per finding, calibrated on
+gold-58 first), then steps 2-3; or (b) drop exp017. Caution recorded for step 3 if it proceeds: gold-58
+(n=58) cannot resolve differences below ~0.02-0.03 macro (see exp010-exp016 use of it as a tripwire only),
+so the "improves gold-58 => launch folds 1-4" gate is very loosely informative; a fold-0 OOF comparison
+with the paired cluster bootstrap should be reported alongside it.
+
+**Deadline hygiene reminder (per user, Oct 22 final selection).** The two selected Kaggle submissions MUST
+be: (1) the 3-member ensemble notebook `submit-ensemble.ipynb` ({exp006, exp003, exp005}, public LB 0.893);
+(2) the distilled student notebook `submit-efficiency.ipynb` (exp008, public LB 0.885, single T4; user
+quotes ~13 min runtime — our own logged figures are 447s on H100 and a ~12-19 min T4 projection, so the
+Kaggle-side run time should be re-read from the notebook's own log before deadline). Final Submit /
+selection clicks are the user's. Efficiency-track status/score: nothing available locally (the efficiency
+score needs the private-LB maxAUC; only the public LB numbers above are known).
