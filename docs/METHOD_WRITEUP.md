@@ -278,7 +278,14 @@ Kaggle (`docs/EXPERIMENTS.md` 2026-09-11) — since every fold's checkpoint shar
 staged flat (`fold0_best.pt`…`fold4_best.pt`, no subdirectories) specifically to avoid re-triggering
 that failure mode with data loss instead of a broken import.
 
-## 10. What didn't work / was tried and dropped
+## 10. What didn't work / was tried and dropped (null and negative results)
+
+Negative results are part of the method: the recipe in §5–§8 is what remained after the levers below were
+tested against the same folds, the same proxy metric and — for the post-probe ablations — a paired
+cluster-bootstrap noise estimate (macro SD ≈ 0.0041; 2 SD = 0.0082). The complete ledger, with hypothesis,
+numbers and verdict for every experiment, is the "Consolidated ablation ledger" in `docs/EXPERIMENTS.md`.
+The short version: only backbone size (+0.005), noisy-student labels (+0.014) and ensembling (+0.006 over the
+best solo) moved OOF beyond noise; every lever tried after that recipe landed is a null (Δ within ±0.004).
 
 - **`labels_v4_candidate`** (round-2 noisy student, blending v3 + a newer image OOF): macro LOO-AUC
   regressed 0.904 → 0.892 — label-engine iteration stopped at v3.
@@ -300,6 +307,32 @@ that failure mode with data loss instead of a broken import.
 - **A 6-member re-selected ensemble** {exp012, 003, 006, 015, 010, 005}: +0.0020 OOF over the deployed
   3-member recipe (CI [+0.0011, +0.0027]) — statistically nonzero but in-sample-selected and tiny
   against a ~2.9x inference cost, so not adopted on that evidence alone.
+- **Auxiliary report-text objective** (exp016a/b — the one lever that uses the ~977 characters of report text
+  per study that a 12-bit label throws away): the image model additionally regresses a frozen multilingual
+  text embedding of its own study's report (BGE-M3, all-but-the-top D=5 to strip the language shortcut; targets
+  fit per fold on training studies only; a dataset assertion refuses any validation-fold or gold-58 study).
+  Pre-registered bar: point macro gain > +0.0082 (2 SD) over exp006. Result: weight 0.1 → +0.0036 (paired 95% CI
+  [+0.0012, +0.0061]), weight 0.5 → +0.0012 ([−0.0016, +0.0037]); gold-58 +0.0002 / −0.0015. **Null against the
+  bar**: the small OOF-proxy gain for weight 0.1 is not confirmed on the image-reviewed gold-58 set and could be
+  the model absorbing report idiosyncrasies that help against report-derived labels; heavier weighting is not
+  better. Only Synovitis moved in both arms (≈ +0.011), and it moved the wrong way on gold-58. The contrastive
+  (CLIP-style) variant was not run because its cheaper auxiliary counterpart showed no bar-clearing signal.
+- **ConvNeXt-V2-B** (exp009): 0.8652 OOF, but correlation 0.9296 with the ViT-B model (diversity bar < 0.90) —
+  accurate yet redundant, so it adds nothing an ensemble could use (listed above; repeated here because it
+  answers "does a different backbone family help?": no).
+- **Severity-aware ordinal targets** (exp017; cumulative P(≥mild/moderate/severe) heads): **dropped on
+  reasoning, not tested.** The hypothesis was that report over-calling of mild/trace findings is the remaining
+  threshold mismatch with the expert panel. But our rubric already maps mild/grade-1/trace findings to
+  p = 0.20–0.35 versus > 0.5 for definite ones, so the soft labels already carry an implicit ordinal signal; the
+  extractions store no severity grade (a zero-GPU audit found a grade word in only 8–44% of positives'
+  free-text phrases), so a real ordinal target would need a new two-model LLM pass, five folds and a
+  leaderboard probe, to be judged on a gold-58 set too coarse to resolve the difference. We report it as an
+  untested idea, not a rejected one.
+- **A void pilot** (exp013/014, a 400-study 384px-vs-448px comparison) crashed on a harness bug (the subset
+  folds omitted the gold-58 studies the trainer evaluates) and was underpowered anyway; its numbers are not
+  cited. The resolution question was answered by the full experiment above (exp015).
+- **External data** (MRNet, KneeMRI): not used — licence terms did not clearly permit prize use plus
+  redistribution of derived weights.
 
 ## 11. Final leaderboard result
 
@@ -332,9 +365,12 @@ as far behind published external AUCs, but the follow-up (2026-09-18) showed mos
 proxy-label noise, not a vision deficit: on the clean gold-58 labels both the report labels and the
 image ensemble reach ~0.988 ACL AUC, while OOF is measured against noisy report-derived soft
 labels. So OOF systematically *understates* true performance — consistent with both probes beating
-their OOF. Remaining effort went to a resolution/slice-count ablation (exp010 T=32, exp015 448px) and
-a final ensemble re-selection; MRNet and KneeMRI were both dropped on licensing grounds (no external
-data). Final private-leaderboard rank: **pending competition close.**
+their OOF. Remaining effort went to a resolution/slice-count ablation (exp010 T=32, exp015 448px), an
+ACL-head initialisation test (exp012), a final ensemble re-selection and an auxiliary report-text objective
+(exp016); all were null (§10). MRNet and KneeMRI were both dropped on licensing grounds (no external data).
+The modeling phase was closed on 2026-09-21 with the recipe frozen as the 3-member ensemble
+{exp006, exp003, exp005} plus the exp008 distilled efficiency model. Final private-leaderboard rank:
+**pending competition close.**
 
 ## 12. Reproducibility
 

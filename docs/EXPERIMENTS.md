@@ -1764,3 +1764,94 @@ quotes ~13 min runtime — our own logged figures are 447s on H100 and a ~12-19 
 Kaggle-side run time should be re-read from the notebook's own log before deadline). Final Submit /
 selection clicks are the user's. Efficiency-track status/score: nothing available locally (the efficiency
 score needs the private-LB maxAUC; only the public LB numbers above are known).
+
+## 2026-09-21 — exp017 DROPPED (on reasoning; NOT tested) and modeling phase CLOSED
+
+**exp017 (severity-aware ordinal / cumulative targets) is dropped on reasoning, not on an experiment.**
+Reason (user decision): rubric v2/v3 already maps mild/trace findings to p = 0.20-0.35 versus definite
+findings > 0.5, so the soft labels already encode an implicit ordinal target; a formal 36-logit ordinal head
+would add little for the cost of a new 2-model LLM grade-extraction pass + 5 folds + an LB probe, judged on a
+gold-58 signal too coarse to resolve it. Step 1 (audit) found no stored grade field (see the entry above).
+Nothing was trained, launched or changed for exp017. It is a hypothesis *not tested*, not one rejected by data.
+
+**Modeling phase CLOSED (user, 2026-09-21).** Recipe frozen: ensemble {exp006, exp003, exp005} + exp008
+efficiency notebook. No new training runs unless the user explicitly starts one. Re-open only on a merger
+partner or a forum insight.
+
+**Disk cleanup done 2026-09-21.** Deleted `best.pt` + `checkpoint.pt` (50 files, listed first, explicit paths)
+for the non-recipe experiments exp010, exp012, exp015, exp016a, exp016b: 70.6 GB (66.2 GiB); quota
+445.07 -> 378.87 GiB of 650. `config.yaml`, `oof.parquet`, `gold58_predictions.parquet`, `summary.csv`
+retained everywhere. exp001/002/007/009/013/014 held no `.pt` (removed in earlier cleanups); exp004's directory
+is gone from disk (its numbers live in this ledger). Recipe experiments exp003/005/006/008: untouched, all 5
+`best.pt` per experiment verified present. Consequence to remember: the deleted models cannot be re-run for
+inference or resumed without retraining.
+
+## CONSOLIDATED ABLATION LEDGER (2026-09-21) — every experiment, hypothesis, result, verdict
+
+Conventions. **OOF** = 5-fold out-of-fold macro-AUC against `labels_v2_final` binarised at 0.5 on the 4,349
+non-gold studies (a noisy report-derived proxy; folds grouped by report cluster). **Gold-58** = 58 image-reviewed
+studies, never trained on; n=58 cannot resolve differences below ~0.02-0.03 — a tripwire, never a selector.
+Gold-58 for exp001-009 is the mean over per-fold models (model cards); for exp010-016 and the ensemble it is the
+fold-ensembled prediction (`compare_runs.py`); the two conventions differ by ~+0.009 for the same model
+(exp006: 0.8806 vs 0.8897), so compare gold-58 only within a convention. **Noise scale**: paired cluster-bootstrap
+SD of solo macro ~= 0.0041, so 2 SD = 0.0082; a paired CI was computed for exp010/012/015/016 only.
+
+### A. Label engine (text side)
+
+| # | Hypothesis | Result | Verdict |
+|---|---|---|---|
+| LE1 rubric v1, Qwen2.5-72B | Severity-thresholded LLM rubric recovers image-review labels from reports | gold-58 macro AUC 0.851 (kappa 0.598) | Baseline |
+| LE2 rubric v2 (Qwen / Llama-3.3-70B) | Per-label rubric fixes (meniscus degeneration, trace effusion, ...) | Qwen 0.846 / Llama 0.870 macro AUC | Model-dependent per label; kept both |
+| LE3 `labels_v2_final` | Per-label strategy (Qwen / Llama / blend), chosen by strict LOO on gold-58 | macro LOO 0.823 (strict LOO; lower by construction) | **Kept** as v2 training target and as the OOF evaluation proxy |
+| LE4 `labels_v3_candidate` | Noisy-student: blend report labels with exp002 image OOF, per-label weight by LOO | Two-criterion acceptance, exp005 (v3) vs exp002 (v2): OOF-vs-original-labels 0.8631 vs 0.8489; gold-58 +0.0139 | **Kept** — the deployed training target (exp005/006/008) |
+| LE5 `labels_v4_candidate` | Second noisy-student round | LOO macro 0.892 vs v3 0.904 (-0.012) | **Rejected** — confirmation-bias regression; iteration stopped at v3 |
+
+### B. Image models, ensemble, distillation
+
+| # | Hypothesis | OOF macro | Gold-58 macro | Verdict |
+|---|---|---|---|---|
+| exp001 DINOv2-S 2.5D slot model, v1 labels (pipeline validation) | Pipeline trains end to end | 0.6511 (pre-fix, 3/5 folds collapsed) | 0.6193 | Root cause found (09-07) and fixed; never a real baseline |
+| exp002 DINOv2-S slot, v2 labels | 2.5D slot architecture works | 0.8489 (0.8481 in a later eval) | 0.8675 | Baseline; superseded by exp006; supplied the image OOF for v3 labels |
+| exp003 DINOv2-B slot, v2 labels | Bigger backbone helps | 0.8536 (+0.0055 vs exp002) | 0.8714 | **In deployed ensemble** |
+| exp004 DINOv3-S/16 slot, v2 labels | Newer backbone helps | 0.8237 (-0.0252 vs exp002) | worse (per label up to -0.11) | **Rejected** — no label favoured it |
+| exp005 DINOv2-S slot, v3 labels | Better labels help | 0.8631 (+0.0142 vs exp002) | 0.8815 | **In deployed ensemble** |
+| exp006 DINOv2-B slot, v3 labels | Bigger backbone on better labels | **0.8681** (+0.0050 vs exp005) | 0.8806 (fold-ens 0.8897) | **In deployed ensemble; baseline for all later comparisons** |
+| exp007 3D ResNet-50 slot, v3 labels | Architectural diversity (3D) | 0.693 (killed at 40%); corr with 2D ensemble 0.444 | n/a | **Killed** — diverse but never reached the 0.80 usefulness bar; ~10.5 h/fold |
+| exp008 DINOv2-S distilled from the ensemble (BCE + KL to teacher) | One small model near the ensemble at a fraction of the cost | 0.8708 (-0.0036 vs ensemble) | 0.8882 | **Deployed efficiency model**; public LB 0.885; ~7.5 min on H100 |
+| exp009 ConvNeXt-V2-B slot, v3 labels | A different backbone family adds diversity | 0.8652 | n/a | **Rejected** — accurate but redundant (corr 0.9296 with exp006; bar < 0.90) |
+| **Ensemble {006, 003, 005}** (greedy forward selection, prob-mean) | Ensemble beats best solo | **0.8744** | 0.8960 (fold-ens) | **Deployed**; public LB **0.893** (OOF-LB gap -0.0186, trustworthy) |
+
+### C. Post-probe ablations (all vs exp006)
+
+| # | Hypothesis | OOF macro (Δ vs exp006) | Gold-58 macro (fold-ens) | Verdict |
+|---|---|---|---|---|
+| exp010: T=32 slices (vs 24) | Small findings are slice-count-limited | 0.8680 (-0.0001; 95% CI [-0.0022, +0.0025]) | 0.8914 | **Null** — effects > ~+0.0025 ruled out |
+| exp015: 448 px on a rebuilt 0.2571 mm/px cache (vs 384) | Small findings are resolution-limited | 0.8680 (-0.0001; CI ~[-0.0023, +0.0025]) | 0.8926 | **Null** — tested properly and rejected |
+| exp013/exp014: 400-study 384-vs-448 pilot | Cheap resolution test | crashed / invalid | n/a | **Void** (harness bug: gold-58 missing from subset folds; underpowered). Numbers not cited |
+| exp012: anatomy-aware ACL query init (sagittal-biased) | ACL is a head/attention deficit | 0.8691 (+0.0010, CI spans 0); ACL +0.0005, MCL -0.0122 | 0.8922 | **Null** — ACL's low OOF is proxy-label noise (gold-58 ACL AUC ~0.988 for report labels and image ensemble alike) |
+| exp016a: auxiliary report-embedding regression (BGE-M3, all-but-the-top D=5), weight 0.1 | Report text carries usable signal beyond the 12 labels | 0.8717 (+0.0036, CI [+0.0012, +0.0061]) | 0.8899 (+0.0002) | **Null vs pre-registered bar (+0.0082)**; sub-bar OOF-proxy gain, no gold-58 confirmation |
+| exp016b: same, weight 0.5 | Stronger aux signal | 0.8693 (+0.0012, CI [-0.0016, +0.0037]) | 0.8883 (-0.0015) | **Null**; no dose-response |
+| exp017: severity-aware ordinal (CORN) targets | Mild/trace over-calling is the residual mechanism | not run | not run | **Dropped on reasoning, NOT tested** (rubric already maps mild to p 0.20-0.35; no stored grade field; cost vs an unresolvable signal) |
+
+### D. Inference / ensemble-composition ablations
+
+| # | Hypothesis | Result | Verdict |
+|---|---|---|---|
+| Laterality-swap TTA | Averaging L/R-swapped predictions helps | -0.0014 OOF on the final ensemble | Rejected |
+| Per-label ensemble recipe vs global | Per-label member choice adds accuracy | +0.0010 OOF (below the 0.002 bar) | Rejected — complexity not justified |
+| 6-member re-selected ensemble {012, 003, 006, 015, 010, 005} | A wider ensemble beats the 3-member recipe | 0.8764 vs 0.8744 (+0.0020, CI [+0.0011, +0.0027]); in-sample selection; ~2.9x inference | Not adopted — breaks efficiency economics; no LB probe |
+| Rank-mean vs prob-mean ensembling (exp002+exp003 test, 09-09) | Rank averaging is more robust | prob-mean 0.8642 vs rank-mean 0.8633 OOF (gold-58 0.8953 vs 0.8965): indistinguishable | Both implemented (rank-mean via an empirical-CDF lookup for single-study inference); no accuracy difference to exploit |
+
+### E. Not run, by decision
+
+| Item | Reason |
+|---|---|
+| exp011 MRNet pre-training / KneeMRI external data | Dropped on licence grounds (no external data used); KneeMRI licence ambiguous |
+| Label-engine round 3 | Deprioritised, then closed: v4 regressed; label iteration stopped at v3 |
+| Contrastive image-text pre-training (exp016 stage 1) | Not launched: the cheaper auxiliary variant showed no bar-clearing signal |
+
+**Reading the whole record.** Across backbone size, label quality (v1 -> v3), resolution, slice count, head
+initialisation, ConvNeXt, 3D, an auxiliary text objective, TTA and ensemble composition, the only levers that
+moved OOF beyond noise were (1) ViT-B over ViT-S (+0.005), (2) v3 noisy-student labels (+0.014) and (3)
+ensembling (+0.006 over the best solo, 0.8744 vs 0.8681). Everything tried after the v3/ViT-B/ensemble recipe
+landed sits inside about +/-0.004 of exp006. Plateau at OOF ~0.868 solo / 0.874 ensemble; public LB 0.893 / 0.885.
