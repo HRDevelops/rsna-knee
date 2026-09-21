@@ -1868,3 +1868,59 @@ MIL scores 0.903 from a lower OOF than ours (OOF is not comparable across pipeli
 0.94x numbers are LB-tuned forks; 0.924 model selected its epoch on gold-58. No action taken; no probes. Access note: the Kaggle
 CLI ignored the OAuth login because a stale legacy `~/.kaggle/kaggle.json` took precedence; worked around with a scratch
 `KAGGLE_CONFIG_DIR` (deleted afterwards), user files untouched.
+
+## 2026-09-21 — MODELING RE-OPENED: exp018 (adjacent-slice Window-MIL, CoAtNet-2) — PRE-REGISTRATION
+
+Trigger (user decision, after the public-benchmark audit): pilkwang's 20-member DINOv2 ensemble already used
+adjacent-slice RGB triplets + 130 mm FOV + per-finding queries and still stalled at 0.891 public; the one public
+result that breaks the DINOv2 ceiling is a single fully fine-tuned CoAtNet-2 with attention-MIL over ~42 windows drawn
+from all planes (0.924 public, no ensemble/TTA; author-claimed, unverified by us). exp018 implements that design
+in-house. The deployed 3-member ensemble ({exp006, exp003, exp005}, LB 0.893) and exp008 (LB 0.885) stay frozen and
+submittable; exp018 is upside-only. (Supersedes the 2026-09-21 "modeling phase closed" entry for this one line of work.)
+
+**Design (all fixed before any result).** Code: `src/rsna_knee/wmil.py`, `scripts/build_cache_wmil.py`,
+`scripts/train_wmil.py`, `configs/exp018_coatnet2_wmil_v3labels.yaml`. The public dreaddevelopment kernels were an
+architectural reference only; no third-party trained checkpoint, label table or code is used.
+- Cache: per-study uint8 [64,336,336]; 140 mm FOV -> 336 px; slices from the 6%-94% span of each series ordered by
+  ImagePositionPatient (the deployed ordering code); 5 slots = Sag-FS 18, Sag-nonFS 14, Cor-FS 12, Cor-nonFS 8,
+  Axial 12. **Disk: 4,407 x 7.2 MB = 31.8 GB, not ~155 GB** — the ~155 GB figure is the exp015 448 px cache; "5 slots x
+  64 slices" (=320/study, 159 GB) would only duplicate slices since series have 20-45 slices (median 30), and the
+  reference recipe's 64 is the study total. I built the 64-total layout and flagged the discrepancy to the user.
+- Window = 3 adjacent slices of the same slot as RGB (never spans two slots); <= 54 candidate windows/study. (The
+  public code lets triplets straddle slot boundaries; ours does not.)
+- Model: timm `coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k` (ImageNet-12k -> 1k init, 72.9 M params, 1024-d), fully
+  fine-tuned, input upsampled 336 -> 384; per-finding attention-MIL over all windows (LayerNorm -> Linear-Tanh-Dropout
+  -Linear(12) softmax over windows -> pooled x per-finding weight); no per-series CLS, no slot bottleneck.
+  Backbone weights = timm's `model.safetensors` (282 MB, HF hub `timm/coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k`),
+  downloaded once to the shared HF cache — the same kind of ImageNet-class init as our DINOv2 backbones. Interpreting
+  "zero third-party pre-trained checkpoint files" as "no third-party *knee-trained* checkpoints"; random init would not
+  be the tested design. Flagged to the user.
+- Training: soft targets from OUR labels_v3, OUR folds; BCE with pos_weight = clip((1-p)/p, 1, 10), p = train prevalence
+  clipped to [0.03, 0.7]; AdamW backbone LR 3e-5 / head LR 1e-3, WD 0.02; OneCycle, 15% warm-up; 16 epochs; batch 8
+  studies x 12 random windows; grad-clip 3; bf16; grad checkpointing; light intensity jitter (+-10%); no flips/rotations.
+  These hyperparameters are the reference recipe's; nothing was tuned.
+- Epoch selection: top-3 epochs by FOLD-VALIDATION macro-AUC (vs labels_v3 binarised, as in train.py), weights averaged
+  (params and BN statistics). Evaluated on ALL candidate windows. Gold-58 is never consulted for selection.
+  (The reference selected epochs on gold-58; its 0.9167 own-gold figure is therefore optimistic.)
+- Laterality, corrected: coronal/axial mirrored horizontally for right knees (XOR the image's own row_x<0);
+  sagittal slices put in ascending patient-x and REVERSED for right knees (the medial-lateral axis is the slice axis).
+  Side = validated final_side.csv -> DICOM tag -> geometric image-centre rule (|median x| >= 20 mm; x<0 = right).
+  **Observation about the deployed pipeline (not acted on):** it flips the horizontal axis of sagittal images for right
+  knees (an anterior-posterior mirror, not a laterality normalisation) and leaves the 1,491 studies (34%) with no
+  validated side un-normalised in training; at inference it averages both orientations for those. exp018 avoids both.
+
+**Gate and kill rule (fixed now).** Fold 0 only first. KILL: fold-0 gold-58 macro-AUC of the averaged model < 0.880 ->
+halt, report, launch nothing further. If >= 0.880, folds 1-4 launch automatically (`scripts/exp018_gate.py`, through
+`safe_sbatch.py`, disk-guarded). 0.880 is ~ the deployed exp006 fold-mean gold-58 (0.8806): a pass means "not worse
+than the deployed recipe on a tripwire with n=58 (SE ~0.03)", not evidence of improvement; the gate report therefore
+also gives fold-0 OOF vs exp006's same fold. Compare-to-deployed bar for adoption (not fold 0): the same paired
+cluster-bootstrap machinery as exp010-016 (macro SD ~0.0041). A blend test (exp018 + {003, 005, 006}, OOF, prob- and
+rank-mean, paired bootstrap) follows the 5-fold run. Probe #3 (Kaggle) is the user's submit click; a self-contained
+single-model notebook will be staged; its dual-T4 runtime can only be *measured* on Kaggle (we profile on H100 and
+project, as for the earlier notebooks).
+
+**Caveats stated in advance.** (1) The 0.924 reference figure is the author's public-LB claim for their weights and
+labels; our OOF/gold under labels_v3 and the reference's public score are not the same measurement. (2) OOF against
+report-derived labels is not comparable across pipelines (a B3 MIL model scored 0.903 public from an OOF of 0.854, below
+ours); a public-LB probe is the only cross-pipeline check, and it is one probe of the budget. (3) One seed per fold.
+(4) Windows are sampled 12/study in training and 54/study at evaluation (the reference does the same with 12 vs 24-94).

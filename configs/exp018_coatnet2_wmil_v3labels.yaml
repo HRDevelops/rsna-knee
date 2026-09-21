@@ -1,0 +1,36 @@
+# exp018 (2026-09-21): adjacent-slice Window-MIL with a fully fine-tuned CoAtNet-2. In-house implementation
+# (src/rsna_knee/wmil.py); the public dreaddevelopment single-model kernels were an ARCHITECTURAL reference only
+# (per-finding attention-MIL over 3-slice RGB windows, 140mm FOV -> 336px, 5 slots / 64 slices, pos_weight BCE,
+# OneCycle, top-3 epoch weight averaging). No third-party trained checkpoints, labels or code are used; the
+# backbone is timm's ImageNet-12k -> 1k init (coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k), fully fine-tuned.
+# Differences from the reference, all deliberate: OUR labels_v3 targets, OUR folds (same as exp002-016),
+# epoch selection and top-3 averaging by FOLD VALIDATION AUC (the reference selected on gold-58; gold-58 is
+# quarantined here), slot-aware windows (a window never spans two slots), geometry-based side rule for the
+# 34% of studies with no DICOM laterality tag.
+experiment: exp018_coatnet2_wmil_v3labels
+seed: 42
+data:
+  cache_dir: ${RSNA_ROOT}/data/cache_wmil
+  manifest_dir: ${RSNA_ROOT}/artifacts/cache_manifests_wmil
+  labels: ${RSNA_ROOT}/artifacts/labels/labels_v3_candidate.parquet
+  folds: ${RSNA_ROOT}/artifacts/folds.parquet
+  final_side: ${RSNA_ROOT}/artifacts/final_side.csv
+model:
+  arch: coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k
+  res: 384
+  grad_checkpointing: true
+  head_dropout: 0.2
+train:
+  epochs: 16
+  batch_studies: 8
+  k_train: 12
+  bb_lr: 3.0e-5
+  head_lr: 1.0e-3
+  weight_decay: 0.02
+  pct_start: 0.15
+  grad_clip: 3.0
+  topk: 3
+  precision: bf16
+aug:
+  intensity_jitter: 0.1
+  laterality_swap_prob: 0.0
