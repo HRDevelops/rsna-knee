@@ -1685,3 +1685,39 @@ joint loss + backward with aux cosine loss ~1.0 at init; eval `forward()` unaffe
 - An aborted first pipeline (jobs 25766-25772) was cancelled by explicit job ID after the embedder
   failed; the failed embedding runs (25766, 25773) wrote nothing.
 - Expected ~1-1.5 days wall (exp006-sized runs, ~7h/session x 2 sessions, 10 tasks under an 8-GPU cap).
+
+## 2026-09-21 — exp016 RESULT: auxiliary report-embedding objective does NOT clear the pre-registered bar
+
+All 10 folds (2 arms x 5) completed 24/24 epochs, no errors; verdict job 25787 ran the mechanical bar
+(`artifacts/exp016_verdict.md`, `artifacts/exp016_compare_vs_exp006.md`). Baseline exp006 macro 0.8681
+(bootstrap SD 0.0042). Bar (fixed 2026-09-20): point macro gain > +0.0082.
+
+| arm | OOF macro | Δ vs exp006 | 95% paired CI | P(Δ>0) | gold-58 macro (Δ) | verdict |
+|---|---|---|---|---|---|---|
+| exp016a (aux weight 0.1) | 0.8717 | +0.0036 | [+0.0012, +0.0061] | 0.99 | 0.8899 (+0.0002) | does not clear |
+| exp016b (aux weight 0.5) | 0.8693 | +0.0012 | [-0.0016, +0.0037] | 0.78 | 0.8883 (-0.0015) | does not clear |
+
+**Reading, without spin.**
+- Per the pre-registration this is a null: neither arm reaches +0.0082, so neither is adopted and the
+  shuffled-report control is NOT run (it was only conditional on clearing the bar).
+- exp016a's gain is probably real *on the OOF proxy* (CI excludes zero) but it is ~0.4x the bar, and the
+  clean check (gold-58, n=58) shows nothing (+0.0002). It cannot be distinguished from "absorbed report
+  idiosyncrasies that help against report-derived labels" — pre-registered caveat (2).
+- The heavier weight (0.5) is worse than 0.1 on macro and on gold-58, i.e. no dose-response toward more
+  report signal being better.
+- Per-label: Synovitis is the one label that moves in both arms (+0.0115 [+0.006,+0.016] / +0.0106
+  [+0.004,+0.016]) — plausibly the label whose report text is most under-used by 12-bit labels — but on
+  gold-58 Synovitis goes the wrong way in both (-0.013 / -0.011). Other per-label deltas straddle zero;
+  12 labels x 2 arms means a few will look significant by chance; not interpreted individually
+  (e.g. exp016b ACL +0.0133 alongside MCL -0.0152).
+- Caveats as pre-registered: two arms (best-of-two optimism), OOF vs report-derived proxy, one seed/arm.
+
+**Decision.** Deployed 3-member ensemble ({exp006, exp003, exp005}) and the exp008 efficiency notebook
+are unchanged and remain frozen/submittable. No LB probe. The contrastive (stage-1) variant is NOT
+launched: the cheaper auxiliary variant, whose job was to show whether report text carries usable extra
+signal, showed at most a sub-bar, gold-unconfirmed gain, so the evidence does not justify the 5-run
+stage-1 cost. Cutoff for further exp016 work remains Oct 15; nothing further is queued. All exp016 jobs
+finished; nothing of ours is running or queued (`rv_*` jobs are not ours and were left alone).
+
+**Housekeeping note.** `exp016*/fold*/best.pt` contain `aux_head.*` weights; strip them before any Kaggle
+staging (strict load) if an exp016 member is ever used. Quota at check: 445 GiB / 650 GiB.
