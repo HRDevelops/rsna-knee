@@ -30,7 +30,7 @@ from rsna_knee.wmil import NUM_SLOTS, SLOT_SPECS, normalize_tag_side, side_from_
 
 root = Path(os.environ["RSNA_ROOT"])
 man = pd.concat([pd.read_parquet(f) for f in sorted((root / "artifacts/cache_manifests_wmil").glob("shard_*.parquet"))])
-n_all, ok = len(man), man[man["ok"]].copy()
+n_all, ok = len(man), man[man["ok"]].copy().set_index("study_uid")
 lines = ["# exp018 cache audit", "", f"studies attempted {n_all}, decoded {len(ok)}, failed {n_all - len(ok)}", ""]
 for e in man[~man["ok"]]["error"].head(3):
     lines.append(f"- failure example: `{e.splitlines()[0][:160]}`")
