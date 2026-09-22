@@ -2029,3 +2029,112 @@ to both the rsync and tar-fallback paths; verified the next push completes in se
 untouched. Recommended candidate: exp018 solo (5-fold), the cleanest read of the OOF/gold-58 gain measured
 2026-09-21; the 0.5-weight blend with the deployed ensemble is a second, separate probe if wanted later. The Submit
 click is the user's.
+
+## 2026-09-22 — Probe #3 RESULT (0.929) + probe #4 blend staged + efficiency-track re-evaluation
+
+**Probe #3 (exp018 solo, 5-fold, dual-T4): 0.929 public LB.** Deployed ensemble stays at 0.893, exp008 at
+0.885 — both untouched and still submittable, per standing instruction. This is a +0.036 gain over the
+deployed ensemble, the largest single jump of the project, and only the third measured OOF-LB gap point
+(-0.0474; same sign as probes #1/#2 but ~2.5-3x larger in magnitude, consistent with -- and stronger
+confirmation of -- the standing "OOF understates true performance" finding, since exp018's gains plausibly
+come from real image evidence the report-label proxy can't see. Not investigated as an anomaly: it fits the
+existing model exactly, just further along the same axis).
+
+### Probe #4 pre-submission analysis (`artifacts/exp018_probe4_analysis.md`, `scripts/exp018_probe4_analysis.py`)
+
+**Diversity.** Per-label Pearson correlation between exp018 and the deployed ensemble's OOF (same method as
+the exp009 diversity check): mean **0.8711**, range 0.70 (MCL) - 0.96 (Effusion). Above the 0.5 threshold set
+in advance, so the pre-declared weight (0.75 exp018 / 0.25 ensemble) stands rather than being lowered.
+
+**Blend table (rank space, OOF, advisory only -- see caveat below):**
+
+| w(exp018) | OOF macro | Delta vs deployed ensemble | gold-58 (Delta) |
+|---|---|---|---|
+| 0.60 | 0.8856 | +0.0118 | 0.9099 (+0.0146) |
+| 0.70 | 0.8855 | +0.0117 | 0.9093 (+0.0140) |
+| **0.75 (chosen)** | 0.8852 | +0.0114 | 0.9091 (+0.0138) |
+| 0.80 | 0.8848 | +0.0110 | 0.9088 (+0.0135) |
+
+**Caveat, stated before reading the table (per instruction -- OOF must not drive the weight):** exp018's OOF
+(0.8816) already undersells it by ~4 points relative to its LB (0.929); nothing suggests the blend's OOF is
+any less biased. The weight (0.75) is fixed by the LB gap (0.929 vs 0.893) and the correlation above, not by
+this table -- which if anything argues for something close to w=0.6-0.7 on OOF grounds, a reminder that the
+two signals disagree and OOF is the one we distrust here.
+
+### Probe #4 built, rehearsed, and staged (not yet submitted)
+
+New code: `src/rsna_knee/infer_blend018.py` (decodes both pipelines per study -- no shared representation
+exists between the 115mm/384px/6-slot deployed cache and the 140mm/336px/5-slot exp018 cache -- converts each
+pipeline's output to a percentile against its own stored OOF distribution via `infer_core.empirical_percentile`,
+the same mechanism the deployed ensemble already uses for its rank-mean labels, then blends). New rank
+reference: `scripts/build_ensemble_output_rank_reference.py` builds a synthetic reference for the DEPLOYED
+ENSEMBLE'S OWN blended output (the recipe's mixed prob-mean/rank-mean per label applied to the OOF population),
+so the outer blend's "rank" is as well-defined as the inner one.
+
+**Two bugs found and fixed while building/rehearsing this** (both in new code, not in anything previously
+shipped): (1) the old-pipeline decode call was passed a plain string where `decode_study_slots` does
+`series_root / series_uid` (a `Path` operation) -- `TypeError` on every call, caught silently by the outer
+error handler in the first rehearsal. (2) after fixing that, decode still failed for every study
+("no .dcm files in series dir") because the direct call skipped `decode_one_for_pool`'s per-study subdirectory
+join (`series_root/study_uid/series_uid`) that the deployed notebooks always go through -- fixed by reusing
+`decode_one_for_pool` itself instead of hand-rolling the call. After both fixes: `scripts/rehearse_blend018.py`
+on 40 real studies -- 40/40 predicted, 0 errors, 0 prior fallbacks.
+
+**Runtime, measured properly (`scripts/profile_decode_vs_model_blend018.py`, 150 real studies, decode/model
+timed separately for BOTH pipelines -- a naive combined-wall-clock number can't be split into "gets the T4 3.5x
+penalty" vs "doesn't"):**
+
+| | H100 decode s/study | H100 model s/study |
+|---|---|---|
+| old ensemble (3 members x5 folds) | 0.360 | 1.253 |
+| exp018 (5 folds) | 0.213 | 0.356 |
+| combined | 0.573 | 1.610 |
+
+T4 projection (decode rescaled from the profiling job's 8 CPU workers to Kaggle's assumed 3; model x3.5): **T4
+x1 ~122 min, T4 x2 ~61 min** for 1,300 studies -- both comfortably inside the 8h cap (T4x2 = ~13% of budget).
+
+**Staged, not submitted:** `notebooks/submit-blend018.ipynb`; Kaggle datasets `rsna-knee-blend018-code` (full
+`rsna_knee` package) and `rsna-knee-blend018-refs` (both rank references + the recipe yaml), both private,
+status `ready`. Reuses the existing `rsna-knee-exp018-weights` and the three deployed members' weight datasets
+unmodified (no already-scored asset was touched). Probe #4's Submit click is the user's.
+
+### Efficiency-track re-evaluation (`scripts/exp018_efficiency_table.py`, `scripts/fold_subset_gold_auc.py`)
+
+**Fold-count sensitivity (gold-58, all-C(5,k)-subsets average -- same method already used for exp008):**
+exp018 loses only **0.0067 macro going 5-fold -> 1-fold** (vs exp008's 0.0060 for the same drop) -- window-MIL
+already averages ~50 windows/study/fold, so one fold alone is a fairly stable estimate.
+
+**Efficiency table** (`Eff = AUC/(0.5-0.95) + seconds/32400`, minimized; AUC anchored on each 5-fold config's
+real public LB, reduced-fold AUC = anchor + the gold-58 delta above; runtime = H100-measured, Kaggle-CPU-
+rescaled, T4-projected, decode/model overlapped):
+
+| config | AUC | projected minutes (T4) | Eff score |
+|---|---|---|---|
+| exp008 (deployed, 5-fold, T4 x1) | 0.8850 | 11.6 | -1.9452 |
+| exp018 (1-fold, T4 x1/x2) | 0.9223 | 15.3 | -2.0213 |
+| exp018 (5-fold, T4 x1) | 0.9290 | 27.2 | -2.0140 |
+| **exp018 (5-fold, T4 x2)** | **0.9290** | **15.3** | **-2.0362 (best)** |
+
+**Finding: the already-staged, already-scored probe #3 notebook (5-fold, T4x2) is ALSO the efficiency-optimal
+configuration** -- not a reduced variant. At 2 GPUs, per-study decode time (0.704s, CPU-bound) exceeds the
+5-fold model time per GPU (0.628s), so decode is the bottleneck at every fold count up to 5: running all 5
+folds costs essentially nothing over running 1, while buying the full AUC gain. A separate reduced-fold
+efficiency notebook was therefore NOT built -- it would not be used. Every exp018 config beats exp008 on the
+formula; the AUC term dominates the formula at this scale (sensitivity ~2.2 per AUC point vs ~0.00003 per
+second of runtime).
+
+**Recommendation (not yet acted on): select the existing probe #3 submission for the efficiency-track pick as
+well as the main pick**, if Kaggle's rules permit selecting the same scored submission for both final slots --
+unverified, the user should check this on the platform. If not permitted, resubmit `notebooks/submit-exp018.ipynb`
+unchanged as the second pick (same code, same expected score). `notebooks/submit-efficiency.ipynb` (exp008)
+stays frozen and submittable until either the same-submission question is resolved or a replacement is
+actually probed and scored -- nothing has been swapped in yet.
+
+### Method writeup
+
+`docs/METHOD_WRITEUP.md` §5a (new) documents exp018's full recipe (preprocessing, architecture, training,
+laterality, results) as the current best model, citing `dreaddevelopment/knee-mri-twelve-findings-from-a-
+single-model` and its training-kernel companion as the architectural reference spec, per instruction. §1 and
+§11 updated with the 0.929 result and probe #3/#4 status; §5-§8 (the original DINOv2 pipeline) are unchanged
+-- it remains the code behind both live submissions.
+click is the user's.

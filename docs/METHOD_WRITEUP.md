@@ -21,7 +21,15 @@ running in **7.5 minutes** per ~1,300 studies on the measured hardware (§8). Bo
 submitted and scored: **ensemble 0.893 public LB, efficiency 0.885 public LB** (−0.008 delta,
 inside the CLAUDE.md §4 efficiency-track target); both OOF↔LB gaps measured trustworthy
 (−0.0186, −0.0142, both < the pre-registered 0.02 threshold — see §11 and `docs/EXPERIMENTS.md`).
-Final private-leaderboard rank: **pending competition close.**
+
+**Update, 2026-09-21/22 (§5a): a structurally different image model — a single fully fine-tuned
+CoAtNet-2 with attention-MIL over adjacent-slice windows, in-house implementation of a public
+reference formulation — scored 0.929 public LB solo**, a +0.036 gain over the deployed ensemble, and
+is now the strongest scored model in the project. Its own efficiency-track re-evaluation finds it
+beats the deployed distilled student on the formula too. The original ensemble/efficiency notebooks
+(§5–§8 below) remain frozen and submittable while a blend and any replacement notebook are probed;
+this write-up keeps both the original pipeline (still the two live submissions) and exp018 (§5a, the
+current best) fully documented. Final private-leaderboard rank: **pending competition close.**
 
 Solo effort, on a shared university HPC cluster (SLURM, H100 x4/node, BeeGFS shared storage — see
 `docs/HPC_WORKFLOW.md`). Total GPU-hours not separately tallocated, but the largest single costs
@@ -154,6 +162,80 @@ fully-convolutional architecture, exp009) while keeping everything else identica
 member, cleared the accuracy bar (OOF 0.8652 vs. a ≥0.855 threshold) but **failed the correlation
 bar** (0.9296 vs. a <0.90 threshold) — too similar to the existing DINOv2 members to add real
 ensemble value; not incorporated. See §10.
+
+## 5a. exp018 — adjacent-slice Window-MIL (CoAtNet-2): the current best model
+
+After the DINOv2 slot pipeline (§5–§8) plateaued and a battery of principled follow-up levers all
+came back null (§10), we surveyed the public leaderboard's top solutions (`artifacts/public_benchmark_audit.md`,
+2026-09-21). The DINOv2-slot family plateaus publicly wherever we found it (a public 20-member DINOv2
+ensemble scores 0.891, next to our 0.893) — but a structurally different design does not: a single,
+fully fine-tuned CoAtNet-2 with attention-MIL pooling over dozens of adjacent-slice windows drawn from
+every plane scores 0.924 solo with no ensemble, per **[dreaddevelopment's "Knee MRI: twelve findings
+from a single model"](https://www.kaggle.com/code/dreaddevelopment/knee-mri-twelve-findings-from-a-single-model)**
+(inference) and its companion **["training the twelve-finding model"](https://www.kaggle.com/code/dreaddevelopment/knee-mri-training-the-twelve-finding-model)**
+kernel, which we read as the architectural reference spec for exp018 — the broader public lineage
+that motivated re-opening modeling (`maverickss26/rsna-knee-0942-restructured`,
+`pilkwang/rsna-knee-baseline-v1`, and their forks) is also cited there. Everything below is our own
+implementation (`src/rsna_knee/wmil.py`): our labels (`labels_v3_candidate`), our folds, our
+laterality/geometry ordering, gold-58 quarantined, and no third-party trained checkpoint — only
+timm's ImageNet-12k→1k initialization (`coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k`), the same class of
+generic init as the DINOv2 backbones above.
+
+**Preprocessing.** Each study is resampled to a **140mm field of view at 336px** (wider than §5's
+115mm — every public pipeline surveyed used 130–140mm and we had never varied this axis) into **5
+fixed slots** (`Sagittal×{FS,non-FS}`, `Coronal×{FS,non-FS}`, `Axial`) totalling **64 slices**, taken
+from the **6–94% span** of each series (not the centre band — the outer slices are where the
+collateral ligaments and lateral meniscus sit). Slice ordering is the same `ImagePositionPatient`
+projection used throughout this project.
+
+**Input and model.** Windows of **3 adjacent slices from the same slot** are stacked as an RGB image
+(never spanning two slots) — up to 54 candidate windows per study. Each window passes through a
+**fully fine-tuned CoAtNet-2** (73M params); a **per-finding attention head pools over ALL of a
+study's windows at once** (no per-series CLS token, no slot bottleneck) — the study's own evidence
+decides which windows matter for each finding, rather than a fixed aggregation hierarchy.
+
+**Training.** BCE with `pos_weight` (inverse label prevalence, clipped to [1,10]); AdamW with
+separate backbone/head learning rates (3e-5 / 1e-3); OneCycle schedule, 16 epochs, 12 random windows
+per study per step; light intensity jitter only (no geometric augmentation, no flips). **Epoch
+selection differs from the reference**: the top 3 epochs are chosen by **fold-validation macro-AUC**
+(not gold-58 — the reference selects on its 58-study test), and their weights are averaged.
+
+**Laterality, corrected.** Coronal/axial images are mirrored for right knees (image-plane flip);
+sagittal series are put in ascending patient-x order and their **slice order** reversed for right
+knees (sagittal's medial-lateral axis is the slice axis, not the image plane — the deployed §5
+pipeline mirrors sagittal images instead, which is an anterior-posterior flip, not a laterality
+correction). Side comes from a validated table where available, else the DICOM tag, else an
+image-centroid geometry rule that resolves 99.4% of the 1,491 studies (34%) the deployed pipeline
+left un-normalized, agreeing with validated sides 99.0–99.1% of the time where both exist
+(`artifacts/exp018_cache_audit.md`).
+
+**Results.** Pre-registered gate: fold 0 alone would abort the remaining folds if its gold-58 macro
+fell below 0.880 (the deployed recipe's own level) — fold 0 scored 0.9063, folds 1–4 launched. Full
+5-fold: OOF macro **0.8816** (+0.0135 vs. the deployed recipe's best solo model, 95% paired CI
+[+0.0100, +0.0171]), gold-58 **0.9091** (+0.0193). The gain concentrates on the mirror-symmetric
+labels most sensitive to the laterality fix — MCL (+0.080), Lateral Meniscus (+0.031), Lateral OA
+(+0.017), ACL (+0.016) — with Effusion/Synovitis flat to slightly down. The design bundles several
+changes at once (backbone family, window-MIL input, wider FOV, corrected laterality); no ablation
+isolates which one is responsible. **Scored 0.929 on the public leaderboard** (probe #3, 2026-09-22)
+— a further +0.036 over the deployed ensemble's 0.893, larger than the OOF gain predicted, consistent
+with this project's standing finding that OOF (scored against report-derived labels) undersells any
+model whose gains come from genuinely reading the images rather than the report proxy (§3, §11).
+
+**Blend (probe #4).** Per-label OOF correlation between exp018 and the deployed ensemble is 0.87
+(mean) — high enough that the pre-registered 0.75/0.25 rank-space blend (exp018-weighted, chosen
+from the LB gap and this correlation, deliberately *not* from an OOF maximum — see the caveat above)
+was staged rather than adjusted (`artifacts/exp018_probe4_analysis.md`).
+
+**Efficiency-track re-evaluation.** exp018's gold-58 macro drops only 0.0067 going from 5 folds to 1
+(all-subsets averaging, `scripts/fold_subset_gold_auc.py`) — window-MIL already averages ~50 windows
+per fold, so one fold is a fairly stable estimate on its own — while runtime is dominated by DICOM
+decode rather than the model at 2 GPUs. Recomputing `Eff = AUC/(0.5−maxAUC) + s/32400` (maxAUC 0.95)
+across fold counts (`scripts/exp018_efficiency_table.py`) finds the **full 5-fold, dual-T4
+configuration efficiency-optimal** — i.e. the same notebook already staged for probe #3, not a
+reduced variant — because at 2 GPUs decode is the bottleneck for any fold count up to 5, so extra
+folds cost almost nothing in wall-clock while still buying AUC. This beats the deployed exp008
+efficiency model on the formula. `exp008` and the ensemble notebook remain frozen and submittable
+until a replacement is actually probed and scored, per standing policy.
 
 ## 6. Training stability
 
@@ -369,7 +451,29 @@ their OOF. Remaining effort went to a resolution/slice-count ablation (exp010 T=
 ACL-head initialisation test (exp012), a final ensemble re-selection and an auxiliary report-text objective
 (exp016); all were null (§10). MRNet and KneeMRI were both dropped on licensing grounds (no external data).
 The modeling phase was closed on 2026-09-21 with the recipe frozen as the 3-member ensemble
-{exp006, exp003, exp005} plus the exp008 distilled efficiency model. Final private-leaderboard rank:
+{exp006, exp003, exp005} plus the exp008 distilled efficiency model — and **re-opened the same day**
+after a survey of the public leaderboard (§5a) identified a structurally different, higher-scoring
+design; that gap being closeable was itself the strongest evidence that the ~6–7 point gap above was
+architectural, not an artifact of our labels or validation.
+
+**Probe #3 (exp018, 2026-09-22): 0.929 public LB**, solo, no ensemble — the single largest jump of
+the project, and the first probe to meaningfully close the gap to the public top (down from ~6–7
+points to within ~2 points of the highest public scores surveyed in the benchmark audit). OOF
+predicted +0.0135 macro over the deployed ensemble's best solo member; the LB delta was +0.036 over
+the deployed ensemble itself — consistent with, and larger than, the standing OOF-understates-truth
+pattern above, as expected for a model whose gains come from genuinely different image evidence
+rather than fitting the report-label proxy more closely.
+
+| | OOF macro-AUC (reference) | Public LB | Gap (OOF − LB) | Verdict |
+|---|---|---|---|---|
+| Probe #1 — ensemble (3 members) | 0.8744 | 0.8930 | −0.0186 | TRUSTWORTHY (< 0.02) |
+| Probe #2 — efficiency (exp008) | 0.8708 | 0.8850 | −0.0142 | TRUSTWORTHY (< 0.02) |
+| **Probe #3 — exp018 (solo, §5a)** | **0.8816** | **0.9290** | **−0.0474** | Consistent in sign with #1/#2, larger in magnitude — expected (see above), not investigated as an anomaly |
+
+Probe #4 (a rank-space blend of exp018 and the deployed ensemble, weighted 0.75/0.25 by the LB gap
+and a per-label OOF diversity check rather than by OOF) is staged (`notebooks/submit-blend018.ipynb`)
+but not yet submitted at the time of writing. `exp008` and the ensemble notebook remain frozen and
+submittable throughout — no live submission has been withdrawn. Final private-leaderboard rank:
 **pending competition close.**
 
 ## 12. Reproducibility
