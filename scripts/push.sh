@@ -21,6 +21,7 @@ if command -v rsync >/dev/null 2>&1; then
         --exclude '__pycache__' \
         --exclude '*.pyc' \
         --exclude '.ipynb_checkpoints' \
+        --exclude 'kaggle_staging' \
         ./ "$HPC_HOST:$HPC_CODE_DIR/"
 else
     # No rsync on this machine (common on plain Git Bash/Windows without WSL/cygwin) — fall back
@@ -35,6 +36,7 @@ else
         --exclude='__pycache__' \
         --exclude='*.pyc' \
         --exclude='.ipynb_checkpoints' \
+        --exclude='kaggle_staging' \
         . | ssh "$HPC_HOST" "tar xzf - -C '$HPC_CODE_DIR'"
 fi
 

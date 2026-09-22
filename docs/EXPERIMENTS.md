@@ -1999,3 +1999,33 @@ is the user's Submit click.
 staging copies). Separate from `rsna-knee-code` so the frozen notebooks' inputs are unchanged. Local copies in `kaggle_staging/`
 (gitignored). Next: attach both + the competition data to a new notebook from `notebooks/submit-exp018.ipynb`, dry-run it on Kaggle
 (first run against Kaggle's timm; gives the real T4 speed), then probe #3 (the user's Submit click).
+
+## 2026-09-22 — exp018 Kaggle dry run + pre-submission timing check
+
+**Kaggle dry run (user, "Save & Run All"): passed.** T4x2, torch 2.10.0+cu128, timm 1.0.26 (vs HPC's timm 1.0.29 —
+architecture matched: `WindowMIL` built with `pretrained=False` then `load_state_dict(strict=True)` succeeded for all
+5 folds, so the timm version gap doesn't affect this checkpoint). 5 fold models loaded in 21s across 2 GPUs; ran on
+Kaggle's 3-row placeholder `test.csv` (real scoring always uses a hidden ~1,300-study rerun — the placeholder is
+expected and gives no timing signal at scale); all format assertions passed; 3 distinct, in-range probability rows,
+0 errors, 0 prior fallbacks. 64.5s total including model load and notebook-export overhead.
+
+**Pre-submission timing check (`scripts/profile_decode_vs_model_exp018.py`, job 26078, H100, 300 real fold-0
+validation studies — never used for exp018 training/selection):** decode 0.264 s/study, 5-fold model 0.359 s/study
+(0.072 s/study/fold; mean 51.5 candidate windows/study). Applying the documented T4 projection method
+(`docs/SUBMISSION_RUNBOOK.md`: model time x3.5, decode unchanged) — **T4 x1: ~33 min for 1,300 studies; T4 x2: ~17
+min** — both far inside the 8h Kaggle cap (< 7% of budget even single-GPU), so this does NOT depend on the untested
+wall-clock degrade-fold-count logic in `infer_wmil.run_exp018` actually firing. The 3.5x multiplier is carried over
+from the DINOv2 ViT profiling (2026-09-11) and was not separately re-validated for CoAtNet-2's operator mix, but the
+margin is wide enough that even a 10x error in the multiplier (model 0.359 x 10 = 3.59 s/study) would still land
+around 83 min, well under budget.
+
+**Infra bug found and fixed while checking this: `scripts/push.sh` did not exclude `kaggle_staging/`** (added
+2026-09-21 for the exp018 dataset staging), so every push after that point tried to rsync/tar the 1.4GB of fold
+weights to HPC — this silently made pushes take several minutes and time out under the tool's command limits,
+which is why the profiling job above took two attempts to get onto HPC. Fixed by adding `--exclude kaggle_staging`
+to both the rsync and tar-fallback paths; verified the next push completes in seconds again.
+
+**Verdict: safe to submit as probe #3 on runtime grounds.** Deployed ensemble (0.893) and exp008 (0.885) remain
+untouched. Recommended candidate: exp018 solo (5-fold), the cleanest read of the OOF/gold-58 gain measured
+2026-09-21; the 0.5-weight blend with the deployed ensemble is a second, separate probe if wanted later. The Submit
+click is the user's.
