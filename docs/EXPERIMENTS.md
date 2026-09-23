@@ -2194,13 +2194,14 @@ and submittable exactly as before -- nothing about their already-scored status c
 ever re-run or resubmitted, it would still carry the unpatched `prefetch_decode`. Flagged for the user to
 decide whether `rsna-knee-code` should also get this fix; not done unilaterally.
 
-**Task 4 (update `rsna-knee-blend018-code`): blocked on Kaggle auth**, not a code issue. The OAuth token
-(`~/.kaggle/credentials.json`) expired (`access_token_expiration: 2026-09-23T07:19:42Z`, now past) --
-same expiry pattern as before. `kaggle datasets version -p blend018_code ...` failed with "Authentication
-required". Everything else (fix, HPC re-staging of the patched package, local re-sync) is done and ready
-to push the instant a fresh `kaggle auth login` is run. `notebooks/submit-blend018.ipynb` is unaffected
-(no notebook-cell changes needed; the fix lives entirely in the `rsna_knee` package). exp018 (0.929, banked)
-and the deployed ensemble/efficiency notebooks remain untouched throughout.
+**Task 4: done.** After a fresh `kaggle auth login`, `kaggle datasets version -p blend018_code -m "v3: exit-
+safety fix..."` uploaded successfully. **`rsna-knee-blend018-code` is v3, status `ready`**, confirmed by
+polling `kaggle datasets status` and cross-checking file sizes against the patched sources: `infer_core.py`
+23,103B, `infer_wmil.py` 9,277B, `infer_blend018.py` 11,576B (all larger than the pre-fix versions, as
+expected). `notebooks/submit-blend018.ipynb` needed no changes (the fix lives entirely in the `rsna_knee`
+package, not notebook cells). exp018 (0.929, banked) and the deployed ensemble/efficiency notebooks remain
+untouched throughout. Probe #4 (v3) is ready for the user to dry-run and, if clean, submit -- per the
+guardrail, this is the final attempt before dropping the blend and locking exp018 for both selections.
 
 ### Method writeup
 
