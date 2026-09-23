@@ -1,10 +1,9 @@
 # RSNA Knee Abnormality Detection — Method Writeup
 
 Winners' obligation write-up (competition rules) accompanying the open-sourced code, weights, and
-presentation video. Drafted 2026-09-15, before the leaderboard is known — every number below is a
-real, logged measurement from `docs/EXPERIMENTS.md` except §1's final rank and §11, which are
-placeholders pending the actual probes. Update those two sections (and re-check nothing else drifted)
-once probe #1/#2 are scored and the competition closes; everything else here is submission-ready.
+presentation video. Drafted 2026-09-15 and updated through 2026-09-23. Every number below is a real,
+logged measurement from `docs/EXPERIMENTS.md`. The only open item is the final private-leaderboard rank
+(§1, §11), which is filled in when the competition closes.
 
 ## 1. Summary
 
@@ -374,23 +373,29 @@ that failure mode with data loss instead of a broken import.
 
 **The teardown hang (probe #4, never resolved).** The exp018 + ensemble blend notebook finished all
 its cell code on Kaggle (submission written at 346s, the rendered notebook at 357s) and then hung
-until Kaggle's 9h limit killed it. We found one real bug: `infer_core.prefetch_decode`'s feeder thread
-did a bounded `queue.put()` with no timeout inside a `with ThreadPoolExecutor(...)` block, so if the
-consumer stopped early the put blocked forever and the pool's worker threads (non-daemon by design)
-were never shut down. Fixed with a stop event, a bounded-retry put and an unconditional
-`shutdown(wait=True, cancel_futures=True)` in `finally`, and proven on HPC (six standalone
-`timeout 120` tests at N=1–3, all exit 0, ~0.9s from last work to process exit). **The fixed v3 hung
-again on Kaggle for 10h.** A final v4 ended the notebook with a hard `os._exit(0)`. It exited
-immediately, but Kaggle's papermill runner reports that as `DeadKernelError` and marks the run
-`ERROR`, so it cannot be submitted. Its log also exposed a regression that the fix itself had
-introduced: the GPU worker join was given a 30s timeout. On a T4, the first study through 20 models
-takes longer than that, so 2 of 3 studies were silently written as label priors, and GPU threads were
-still running CUDA work when the interpreter shut down. That is a plausible cause of the v3 hang, but
-not of v2's, which used the untimed join and still hung.
+until Kaggle's 9h limit killed it (v2). Investigation found a real bug in
+`infer_core.prefetch_decode`: its feeder thread did a bounded `queue.put()` with no timeout inside a
+`with ThreadPoolExecutor(...)` block, so a consumer that stopped early left the pool's non-daemon worker
+threads alive forever. It was fixed (stop event, bounded-retry put, unconditional
+`shutdown(wait=True, cancel_futures=True)`) and shown to exit cleanly on HPC. **The fixed v3 hung again
+for 10h.** Only afterwards did we check which code the blend actually ran: **the blend never calls
+`prefetch_decode`.** The bug was real (the ensemble and efficiency notebooks do call it, with an early
+`break`), but it was never on the blend's path. v2's own decode loop had finished and joined all of its
+threads before the cell ended.
+
+A last v4 ended the notebook with a hard `os._exit(0)`. It exited immediately, but Kaggle's papermill
+runner reports that as `DeadKernelError` and marks the run `ERROR`, so it cannot be submitted. Its log
+exposed a regression the v3 change had introduced: the GPU worker join was given a 30s timeout. On a
+T4, the first study through 20 models takes longer than that, so 2 of 3 placeholder studies were
+silently written as label priors, with GPU threads still running at shutdown. That may have contributed
+to the v3 hang, but at the end of a full 1,300-study run the backlog is small and the timeout may never
+have fired. **Neither hang has an established cause.** v2 is unexplained; teardown of 20 models' CUDA
+state, or the Kaggle runner itself, remain untested candidates.
 
 Lessons:
-- An HPC reproduction proves the bug you reproduced, not the failure you saw. On a faster GPU, a
-  timeout-based "safety" fix can hide the very race it creates.
+- An HPC reproduction proves the bug you reproduced, not the failure you saw. Confirm the suspect code
+  is actually on the failing path, and run a pre-fix control, before calling it the root cause.
+- On a faster GPU, a timeout-based "safety" fix can hide the very race it creates.
 - A test that checks only the output's shape (row count) cannot tell predictions from fallbacks.
 - The Kaggle runner (papermill/nbclient kernel lifecycle, container teardown) is itself part of the
   system under test.
@@ -515,8 +520,8 @@ never scored.** Submitted twice (v2 2026-09-22, v3 2026-09-23); both runs wrote 
 and then hung at teardown until Kaggle's time limit (9h, 10h), so neither received a score. v3
 already carried the thread-shutdown fix proven on HPC. A last-chance v4 ending in a hard
 `os._exit(0)` did not hang, but Kaggle marked it `ERROR` (`DeadKernelError`), so it could not be
-submitted. Per the pre-agreed guardrail, the blend was then dropped. The root cause is only partially
-identified (§9).
+submitted. Per the pre-agreed guardrail, the blend was then dropped. Neither hang has an established
+cause (§9).
 
 **Final selections: exp018 (probe #3, 0.929) for both the main leaderboard and the efficiency
 track.** It is the highest-scoring submission and also the efficiency-optimal one on the formula

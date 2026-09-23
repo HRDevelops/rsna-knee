@@ -2132,6 +2132,11 @@ actually probed and scored -- nothing has been swapped in yet.
 
 ## 2026-09-23 — Probe #4 v2 hung on Kaggle 9h; root-caused, fixed, proven, v3 staged
 
+> **CORRECTION (added later, 2026-09-23): the "root cause" below is WRONG for the blend.** The
+> `prefetch_decode` bug is real, but the blend driver never calls `prefetch_decode` (v2 = `e9944c6`
+> imports only `decode_one_for_pool` and helpers from `infer_core`). See "Correction: probe #4 hang
+> attribution" at the end of this file.
+
 **Symptom (user's log audit): `submission.csv` written at 346s, `nbconvert` wrote `__results__.html` at
 357s (i.e. ALL notebook cell code, including post-processing, had already finished normally), then the
 kernel sat for 9 hours before being killed.** Root cause: `infer_core.prefetch_decode`'s feeder thread
@@ -2263,10 +2268,10 @@ T4, the first study through 20 models (with warm-up) takes more than 30s per GPU
 gave up while the workers were still predicting, the submission was built from whatever `results`
 held at that moment, and the daemon GPU threads were **still running CUDA inference when the notebook
 finished and the interpreter began shutting down**. A daemon thread doing CUDA work during interpreter
-finalization is a known way to hang a process, so this is a plausible, self-inflicted cause of **v3's**
-10h hang. It cannot explain **v2's** 9h hang, because v2 (`e9944c6`) still had the untimed join. The
-HPC proof missed it for two reasons: the H100 finishes well inside 30s, and the tests asserted only the
-row count, not that each row was a real prediction.
+finalization is a known way to hang a process, so this is a *possible* contributor to v3's 10h hang.
+It is not established (see the correction entry below). It cannot explain v2's 9h hang, because v2
+(`e9944c6`) still had the untimed join. The HPC proof missed it for two reasons: the H100 finishes well
+inside 30s, and the tests asserted only the row count, not that each row was a real prediction.
 - Fixed in source (not pushed anywhere): both drivers are back to an untimed `w.join()`, which is safe
   because the sentinels guarantee each worker returns. `test_blend_shutdown.py` and
   `test_exp018_shutdown.py` now also assert that zero rows equal the label prior.
@@ -2301,13 +2306,43 @@ evidence it would succeed.
   ever re-run. Their scored submissions are unaffected.
 
 **Probe #4 ledger (final):** attempted and abandoned, never scored. Two Kaggle timeouts (v2 9h, v3 10h),
-both after a `submission.csv` was written, plus one `ERROR` (v4, the deliberate `os._exit` test). Root
-cause **partially identified**:
-- A real `prefetch_decode` thread-lifecycle bug was fixed and proven on HPC.
-- v3's hang is plausibly explained by the timed worker join that same fix introduced (daemon threads
-  still running CUDA work at shutdown).
-- v2's hang, with an untimed join, remains unexplained. The suspicion is CUDA/driver or container
-  teardown with 20 models on 2 GPUs.
+both after a `submission.csv` was written, plus one `ERROR` (v4, the deliberate `os._exit` test).
+**Neither hang has an established cause** (see the correction entry below):
+- v2: the blend's own code left no live threads, so the cause is unexplained.
+- v3: the timed-join regression is a possible contributor, not a demonstrated cause.
 
 The OOF blend analysis stays in `artifacts/exp018_probe4_analysis.md` for the record. No further blend
 attempts.
+
+## 2026-09-23 — Correction: probe #4 hang attribution
+
+The earlier entries attributed v2's hang to `infer_core.prefetch_decode`'s blocking `put()` inside
+`with ThreadPoolExecutor`. **Checked against the code that actually ran: the blend never calls
+`prefetch_decode`.**
+- `git show e9944c6:src/rsna_knee/infer_blend018.py` (v2) imports only `decode_one_for_pool,
+  empirical_percentile, ensemble_blend, load_ensemble_recipe, nearest_patch_multiple, prior_row,
+  run_study_inference` from `infer_core`. None of those create threads; `wmil`, `preprocess`, `model`
+  and `dataset` contain no Thread/Pool/Executor at all.
+- The only thread pool on v2's path is `run_blend018`'s own `with ThreadPoolExecutor(...)` loop. The main
+  thread was the producer and called `.result()` on each future before `q.put()`. That loop demonstrably
+  finished: the submission is built only after it exits, the `with` exit shuts the pool down, and the
+  GPU threads (daemon) were then joined *without* a timeout. When v2's cell finished, the blend's own
+  code had no live threads left.
+- So the `prefetch_decode` bug (real, and still worth fixing for `submit-ensemble`/`submit-efficiency`,
+  which do call it with an early `break`) was **never on the blend's path**. The HPC shutdown tests
+  proved the new code exits cleanly, but no pre-fix control was run. They would very likely have passed
+  on v2's code too.
+
+**Reading of the evidence (not certain):**
+
+| attempt | our code's threads at teardown | explanation |
+|---|---|---|
+| v2 (9h) | none left alive | **Unexplained.** Remaining candidates are outside our Python threads: CUDA context/driver teardown with 20 models on 2 GPUs, or the Kaggle runner/container. Not tested. |
+| v3 (10h) | possibly daemon GPU threads mid-inference | **Possible contributor: the timed-join regression.** On the 3-row placeholder, the 30s join certainly expired (v4 log: 2/3 on prior). In a 1,300-study scoring run, the backlog at the end is only a few studies per GPU, so the join may not have expired there at all. |
+| v4 | n/a (os._exit) | No hang; papermill `DeadKernelError`, so the run is `ERROR`. |
+
+The earlier framing, "v2 = the `prefetch_decode` bug, v3 = the regression its fix introduced, one cause
+per attempt", is **not supported**, because v2 did not execute `prefetch_decode`. The parsimonious
+statement is narrower: v2's cause is unknown; v3 carried a real regression of ours that may or may not
+have caused its hang. The METHOD_WRITEUP §9 paragraph was corrected to match. Scored submissions are
+unaffected: exp018's code dataset predates `2ec038d` and never contained either change.
