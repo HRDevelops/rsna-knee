@@ -2130,6 +2130,78 @@ unchanged as the second pick (same code, same expected score). `notebooks/submit
 stays frozen and submittable until either the same-submission question is resolved or a replacement is
 actually probed and scored -- nothing has been swapped in yet.
 
+## 2026-09-23 — Probe #4 v2 hung on Kaggle 9h; root-caused, fixed, proven, v3 staged
+
+**Symptom (user's log audit): `submission.csv` written at 346s, `nbconvert` wrote `__results__.html` at
+357s (i.e. ALL notebook cell code, including post-processing, had already finished normally), then the
+kernel sat for 9 hours before being killed.** Root cause: `infer_core.prefetch_decode`'s feeder thread
+called the bounded `result_queue.put(result)` with no timeout; if the consumer stops pulling early (a
+`break`, or the generator being garbage-collected before exhaustion -- exactly what Kaggle's dummy
+N=3 test invites, since a bounded window fills fast against so few tasks), that `put()` can block
+forever with nothing left to unblock it. Because the block happens INSIDE `with ThreadPoolExecutor(...)
+as pool:`, the feeder thread never reaches `pool.shutdown()` -- and `ThreadPoolExecutor` worker threads
+are deliberately NOT daemon (so real work survives an interpreter exit unless explicitly told to stop).
+An abandoned, never-shut-down pool's idle worker threads are exactly the kind of live non-daemon thread
+that blocks process teardown. `feeder_thread` itself being `daemon=True` was never the guard it looked
+like -- it only stops the feeder thread from blocking exit, not the pool it constructs and never lets
+finish. My own `run_exp018`/`run_blend018` drivers had a related but distinct bug: their sentinel+join
+code for the GPU worker threads ran as plain statements AFTER `with pool:`, not in a `finally`, so an
+exception anywhere in the decode loop would skip it entirely (the GPU threads are daemon=True so this
+specific case wasn't itself a hang risk, but it is exactly the fragility pattern the instruction asked
+to eliminate, and the `with` block's implicit `shutdown(wait=True)` has no `cancel_futures`, so an early
+exit would still wait out already-queued decode tasks instead of dropping them).
+
+**Fix (`src/rsna_knee/infer_core.py`, `infer_wmil.py`, `infer_blend018.py`):**
+- `prefetch_decode`: a `stop_event` the consumer's `finally:` sets on any exit path (early break, normal
+  exhaustion, or GC); the feeder's queue-put is now a bounded-retry loop that checks it, so the feeder
+  can ALWAYS unwind out of `with pool:` instead of blocking forever. `pool.shutdown(wait=True,
+  cancel_futures=True)` now runs in the feeder's own `finally`, unconditionally reached. Consumer-side
+  join changed from a no-op `timeout=0` to a real `timeout=10` with a logged warning if still alive
+  (which should now never fire).
+- `run_exp018` / `run_blend018`: the whole decode-dispatch section is now one `try/finally`; the pool is
+  shut down explicitly with `cancel_futures=True`; the GPU-worker sentinel+join always runs regardless of
+  how the decode loop exits.
+- `multiprocessing.Pool`/`ProcessPoolExecutor` audit (instruction 1c): none exist anywhere in the
+  inference-path modules (`infer_core.py`, `infer_wmil.py`, `infer_blend018.py`, `wmil.py`) -- confirmed
+  by grep, not assumed. Not applicable.
+
+**Proof, on HPC, exactly as instructed (`scripts/test_blend_shutdown.py`, `test_exp018_shutdown.py`,
+`test_prefetch_decode_shutdown.py`; job 26194, `slurm/test_shutdown.sbatch`):**
+
+| test | result | notes |
+|---|---|---|
+| `test_blend_shutdown.py --n-studies 1` | EXIT=0 | full real pipeline (20 models), 36.9s work, clean exit |
+| `test_blend_shutdown.py --n-studies 2` | EXIT=0 | 40.0s work, clean exit |
+| `test_blend_shutdown.py --n-studies 3` | EXIT=0 | 44.2s work, clean exit -- the exact Kaggle dummy-test size |
+| `test_exp018_shutdown.py --n-studies 3` | EXIT=0 | audits submit-exp018.ipynb's driver (already scored 0.929; this is defense-in-depth, not a sign anything was wrong there) |
+| `test_prefetch_decode_shutdown.py --n-studies 3 --break-after 1` | EXIT=0 | audits submit-ensemble.ipynb/submit-efficiency.ipynb's decode path directly, reproducing their exact early-`break` pattern (`if guard.over(): break`) that plausibly triggers the bug |
+| `test_prefetch_decode_shutdown.py --n-studies 3 --break-after 99` | EXIT=0 | same, normal exhaustion (no early break) |
+
+All six ran under `timeout 120` and returned exit code 0 well inside it. **Precise external timing** (job
+26195, bash `time` wrapping the whole process from the outside, not trusting the script's own prints):
+blend018 N=3 -- `real 0m45.120s` total process life vs. the script's own "all work finished at 44.2s" print
+-- **~0.9s from last work to actual process exit**, where it previously hung for 9 hours. (Instruction 2's
+literal "under 30 seconds" referred to shutdown latency, not total runtime; total runtime here is real
+model-loading + real 20-model inference on 3 real studies, which alone takes ~40-45s -- reported honestly
+rather than substituted with a lighter synthetic test that would prove less.)
+
+**Task 3 audit conclusion:** `submit-exp018.ipynb`'s driver (`run_exp018`) is fixed and proven exit-safe.
+`submit-ensemble.ipynb`/`submit-efficiency.ipynb` call `infer_core.prefetch_decode` directly from their own
+cells (not through a driver function) -- the underlying function is now fixed and proven exit-safe, but
+those two notebooks load `rsna_knee` from the **`rsna-knee-code`** Kaggle dataset, a different, NOT-yet-
+updated dataset (this task only asked to update `rsna-knee-blend018-code`). Both notebooks remain frozen
+and submittable exactly as before -- nothing about their already-scored status changes -- but if either is
+ever re-run or resubmitted, it would still carry the unpatched `prefetch_decode`. Flagged for the user to
+decide whether `rsna-knee-code` should also get this fix; not done unilaterally.
+
+**Task 4 (update `rsna-knee-blend018-code`): blocked on Kaggle auth**, not a code issue. The OAuth token
+(`~/.kaggle/credentials.json`) expired (`access_token_expiration: 2026-09-23T07:19:42Z`, now past) --
+same expiry pattern as before. `kaggle datasets version -p blend018_code ...` failed with "Authentication
+required". Everything else (fix, HPC re-staging of the patched package, local re-sync) is done and ready
+to push the instant a fresh `kaggle auth login` is run. `notebooks/submit-blend018.ipynb` is unaffected
+(no notebook-cell changes needed; the fix lives entirely in the `rsna_knee` package). exp018 (0.929, banked)
+and the deployed ensemble/efficiency notebooks remain untouched throughout.
+
 ### Method writeup
 
 `docs/METHOD_WRITEUP.md` §5a (new) documents exp018's full recipe (preprocessing, architecture, training,

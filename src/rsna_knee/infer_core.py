@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import itertools
 import queue
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -164,32 +165,66 @@ def prefetch_decode(tasks: list, decode_fn, num_workers: int, window_size: int |
     of whatever is pulling from this generator, however fast decode runs relative to inference.
 
     decode_fn: infer_core.decode_one_for_pool or decode_one_for_pool_fast (or any picklable-style
-    callable taking one task tuple and returning a result tuple)."""
+    callable taking one task tuple and returning a result tuple).
+
+    Exit-safety (2026-09-23, root-caused from a hung Kaggle commit: submission.csv + __results__.html
+    were both written, then the kernel sat for 9h before being killed — a small task list, N=3 in the
+    Kaggle dummy test, versus a larger window/num_workers). The original version's `result_queue.put()`
+    inside `_feeder` blocks with NO timeout once `window` results are unconsumed; if the CONSUMER stops
+    pulling early (a `break` in the caller's loop, or the generator simply being garbage-collected before
+    it's exhausted), that `put()` can block forever with nothing left to wake it — which means `_feeder`
+    never reaches the end of its `with ThreadPoolExecutor(...) as pool:` block, so `pool.shutdown()` is
+    NEVER CALLED. `ThreadPoolExecutor` worker threads are deliberately NOT daemon (so real work survives
+    an interpreter exit unless explicitly told to stop) and rely on `shutdown()` being reached to end
+    cleanly — an abandoned, never-shut-down pool's idle worker threads are exactly the kind of live
+    non-daemon thread that can leave process teardown hanging. `feeder_thread` itself being daemon=True
+    was never the guard it looked like: it only stops the FEEDER thread from blocking exit, not the
+    (non-daemon) worker threads of the executor it constructs and never lets finish. Fix: a `stop_event`
+    the consumer sets on early exit, checked by a bounded-retry put loop so `_feeder` can always unwind
+    out of `with pool:` (reaching a real `shutdown(wait=True, cancel_futures=True)`) instead of blocking
+    forever."""
     window = max(1, min(window_size or 2, 2))
     result_queue: queue.Queue = queue.Queue(maxsize=window)
     _SENTINEL = object()
     _error: list = []
+    stop_event = threading.Event()
+
+    def _put_or_stop(item) -> bool:
+        """Blocking put with a bounded retry so a consumer that has gone away (stop_event set) doesn't
+        leave us stuck on queue.put() forever. Returns False if we should abandon (stop_event set)."""
+        while not stop_event.is_set():
+            try:
+                result_queue.put(item, timeout=0.5)
+                return True
+            except queue.Full:
+                continue
+        return False
 
     def _feeder() -> None:
+        pool = ThreadPoolExecutor(max_workers=num_workers)
         try:
-            with ThreadPoolExecutor(max_workers=num_workers) as pool:
-                task_iter = iter(tasks)
-                pending: list = []
-                for t in itertools.islice(task_iter, num_workers):
-                    pending.append(pool.submit(decode_fn, t))
-                while pending:
-                    fut = pending.pop(0)
-                    result = fut.result()
-                    del fut
-                    next_task = next(task_iter, None)
-                    if next_task is not None:
-                        pending.append(pool.submit(decode_fn, next_task))
-                    result_queue.put(result)  # blocks here once `window` results are unconsumed
-                    del result
+            task_iter = iter(tasks)
+            pending: list = []
+            for t in itertools.islice(task_iter, num_workers):
+                pending.append(pool.submit(decode_fn, t))
+            while pending and not stop_event.is_set():
+                fut = pending.pop(0)
+                result = fut.result()
+                del fut
+                next_task = next(task_iter, None)
+                if next_task is not None:
+                    pending.append(pool.submit(decode_fn, next_task))
+                if not _put_or_stop(result):
+                    break  # consumer is gone; stop producing, fall through to shutdown
+                del result
         except Exception as e:  # noqa: BLE001 - surface feeder-thread failures to the consumer
             _error.append(e)
         finally:
-            result_queue.put(_SENTINEL)
+            # Always reached now (the retry-put loop above can no longer block forever), so the pool's
+            # worker threads are always told to stop -- cancel_futures drops any not-yet-started decode
+            # tasks instead of waiting for them, since we may be unwinding early.
+            pool.shutdown(wait=True, cancel_futures=True)
+            _put_or_stop(_SENTINEL)  # best-effort; consumer may already be gone (stop_event set)
 
     feeder_thread = threading.Thread(target=_feeder, daemon=True)
     feeder_thread.start()
@@ -203,7 +238,15 @@ def prefetch_decode(tasks: list, decode_fn, num_workers: int, window_size: int |
             yield item
             del item  # drop this generator frame's reference as soon as the consumer resumes
     finally:
-        feeder_thread.join(timeout=0)  # best-effort; feeder is a daemon thread, won't block exit
+        # Wake the feeder out of any blocked put() and give it a real (bounded, not 0s) chance to unwind
+        # through its own finally block (pool.shutdown) before we return -- reached on early `break` in
+        # the caller's loop, on the generator being garbage-collected, or on normal exhaustion alike.
+        stop_event.set()
+        feeder_thread.join(timeout=10)
+        if feeder_thread.is_alive():
+            print("[prefetch_decode] WARNING: feeder thread did not exit within 10s of stop_event; "
+                  "it is a daemon thread so process exit will not block on it, but this should not "
+                  "happen -- investigate if seen.", file=sys.stderr)
 
 
 def decode_study_slots(

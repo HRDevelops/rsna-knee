@@ -179,7 +179,12 @@ def run_blend018(
     workers = [threading.Thread(target=gpu_worker, args=(d,), daemon=True) for d in devices]
     for w in workers:
         w.start()
-    with ThreadPoolExecutor(max_workers=num_decode_workers) as pool:
+    # Exit-safety (2026-09-23): see infer_wmil.run_exp018's identical fix and infer_core.prefetch_decode's
+    # docstring for the mechanism -- an exception anywhere in the decode loop below must not skip the
+    # sentinel+join code (it was a sequence of plain statements after `with pool:`, not a finally), and the
+    # pool must be shut down with cancel_futures=True so we don't wait on decode tasks we're abandoning.
+    pool = ThreadPoolExecutor(max_workers=num_decode_workers)
+    try:
         inflight: deque = deque()
         it = iter(tasks)
         n_done = 0
@@ -201,10 +206,12 @@ def run_blend018(
                         f"exceeds the budget at study {n_done}/{len(studies)} — no automatic degrade for this "
                         f"combined pipeline; consider a smaller fold count if this recurs")
                 log(f"[blend018] {n_done}/{len(studies)} decoded, {len(results)} predicted, {elapsed / 60:.1f} min")
-    for _ in workers:
-        q.put(None)
-    for w in workers:
-        w.join()
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+        for _ in workers:
+            q.put(None)
+        for w in workers:
+            w.join(timeout=30)
 
     prior = prior_row()
     rows = []

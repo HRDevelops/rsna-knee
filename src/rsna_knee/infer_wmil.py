@@ -139,7 +139,18 @@ def run_exp018(
     # notebook's custom package loader (2026-09-10 finding, submit-efficiency.ipynb). pydicom decompression and
     # scipy zoom release the GIL, so threads still parallelise decode. Bounded look-ahead: at most
     # num_decode_workers + 4 decoded stacks exist at once (7.2 MB each) besides the bounded GPU queue.
-    with ThreadPoolExecutor(max_workers=num_decode_workers) as pool:
+    #
+    # Exit-safety (2026-09-23): everything from pool construction through the GPU workers' sentinel+join is
+    # now one try/finally. The earlier version relied on this code running top-to-bottom unconditionally;
+    # an exception anywhere in the decode loop would skip the `q.put(None)`/`w.join()` lines entirely (they
+    # were plain statements AFTER the `with pool:` block, not inside a finally), and would leave `pool`'s
+    # shutdown to the bare `with` statement's default `shutdown(wait=True)` -- no `cancel_futures`, so any
+    # already-submitted-but-not-yet-started decode tasks would still be waited on instead of dropped. Both
+    # are real hang/slow-exit risks (root-caused from a Kaggle commit that hung 9h after all visible work
+    # finished; see infer_core.prefetch_decode's docstring for the mechanism), even though the GPU worker
+    # threads themselves are daemon=True and can't alone block process exit.
+    pool = ThreadPoolExecutor(max_workers=num_decode_workers)
+    try:
         inflight: deque = deque()
         it = iter(tasks)
         n_done = 0
@@ -160,10 +171,12 @@ def run_exp018(
             if n_done % 50 == 0:
                 log(f"[exp018] {n_done}/{len(studies)} studies decoded, {len(results)} predicted, "
                     f"{(time.time() - t0) / 60:.1f} min, folds in use {n_folds_used['n']}")
-    for _ in workers:
-        q.put(None)
-    for w in workers:
-        w.join()
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+        for _ in workers:
+            q.put(None)
+        for w in workers:
+            w.join(timeout=30)
 
     prior = np.array([LABEL_PRIORS[c] for c in TARGET_COLUMNS])
     rows = []
