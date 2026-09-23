@@ -61,6 +61,12 @@ def main() -> None:
         tmp / "submission.csv", num_decode_workers=args.decode_workers,
     )
     assert len(sub) == args.n_studies, f"expected {args.n_studies} rows, got {len(sub)}"
+    # Every row must be a real prediction, not the label prior (see test_blend_shutdown.py).
+    from rsna_knee.infer_wmil import LABEL_PRIORS  # noqa: E402
+    from rsna_knee.wmil import TARGET_COLUMNS  # noqa: E402
+    prior = [LABEL_PRIORS[c] for c in TARGET_COLUMNS]
+    n_prior = int((sub[TARGET_COLUMNS].to_numpy() == prior).all(axis=1).sum())
+    assert n_prior == 0, f"{n_prior}/{len(sub)} rows are label priors, not predictions"
     print(f"[test] all work finished at {time.time() - t_start:.1f}s ({len(sub)} rows) -- returning "
           f"from main() now.", flush=True)
 

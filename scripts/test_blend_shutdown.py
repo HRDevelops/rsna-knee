@@ -78,6 +78,11 @@ def main() -> None:
         tmp / "submission.csv", weight_exp018=args.weight_exp018, num_decode_workers=args.decode_workers,
     )
     assert len(sub) == args.n_studies, f"expected {args.n_studies} rows, got {len(sub)}"
+    # Row count alone is not enough: a timed worker join once filled rows with label priors on a slow GPU
+    # (Kaggle T4) while passing here on H100. Every row must be a real prediction, not the prior.
+    from rsna_knee.infer_core import prior_row  # noqa: E402
+    n_prior = int((sub.iloc[:, 1:].to_numpy() == prior_row()).all(axis=1).sum())
+    assert n_prior == 0, f"{n_prior}/{len(sub)} rows are label priors, not predictions"
 
     work_done_at = time.time() - t_start
     print(f"[test] all work finished at {work_done_at:.1f}s (submission.csv written, {len(sub)} rows) "

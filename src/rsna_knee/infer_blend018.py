@@ -210,8 +210,10 @@ def run_blend018(
         pool.shutdown(wait=True, cancel_futures=True)
         for _ in workers:
             q.put(None)
+        # Untimed join -- see infer_wmil.run_exp018: a timed join here silently dropped studies to the
+        # prior on T4 (Kaggle v4: 1/3 predicted) and left daemon threads mid-CUDA at shutdown.
         for w in workers:
-            w.join(timeout=30)
+            w.join()
 
     prior = prior_row()
     rows = []

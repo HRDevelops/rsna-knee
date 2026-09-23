@@ -26,10 +26,15 @@ inside the CLAUDE.md §4 efficiency-track target); both OOF↔LB gaps measured t
 CoAtNet-2 with attention-MIL over adjacent-slice windows, in-house implementation of a public
 reference formulation — scored 0.929 public LB solo**, a +0.036 gain over the deployed ensemble, and
 is now the strongest scored model in the project. Its own efficiency-track re-evaluation finds it
-beats the deployed distilled student on the formula too. The original ensemble/efficiency notebooks
-(§5–§8 below) remain frozen and submittable while a blend and any replacement notebook are probed;
-this write-up keeps both the original pipeline (still the two live submissions) and exp018 (§5a, the
-current best) fully documented. Final private-leaderboard rank: **pending competition close.**
+beats the deployed distilled student on the formula too.
+
+**Final solution (2026-09-23): exp018 alone, 5 folds on dual T4, is the submission for BOTH the main
+leaderboard and the efficiency track** — the same scored 0.929 notebook, no ensemble. A rank-space
+blend of exp018 with the original ensemble (probe #4) was built and rehearsed but hung on Kaggle twice
+after finishing its work and **never scored**; it was abandoned (§5a, §9, §11). The original DINOv2
+pipeline (§5–§8) is kept fully documented as the path that produced the label engine, the teacher
+ensemble and the first two scored submissions (0.893 / 0.885); it is no longer part of the final
+selection. Final private-leaderboard rank: **pending competition close.**
 
 Solo effort, on a shared university HPC cluster (SLURM, H100 x4/node, BeeGFS shared storage — see
 `docs/HPC_WORKFLOW.md`). Total GPU-hours not separately tallocated, but the largest single costs
@@ -224,7 +229,11 @@ model whose gains come from genuinely reading the images rather than the report 
 **Blend (probe #4).** Per-label OOF correlation between exp018 and the deployed ensemble is 0.87
 (mean) — high enough that the pre-registered 0.75/0.25 rank-space blend (exp018-weighted, chosen
 from the LB gap and this correlation, deliberately *not* from an OOF maximum — see the caveat above)
-was staged rather than adjusted (`artifacts/exp018_probe4_analysis.md`).
+was staged rather than adjusted (`artifacts/exp018_probe4_analysis.md`). **Outcome: attempted and
+abandoned, never scored.** The blend notebook (20 models on 2 GPUs, both preprocessing pipelines per
+study) wrote a valid `submission.csv` in ~6 minutes on Kaggle's placeholder test, then hung at process
+teardown for 9h (v2) and again for 10h (v3) until Kaggle killed it — see §9 for what was found and
+fixed, and what was not. It is not part of the final selection.
 
 **Efficiency-track re-evaluation.** exp018's gold-58 macro drops only 0.0067 going from 5 folds to 1
 (all-subsets averaging, `scripts/fold_subset_gold_auc.py`) — window-MIL already averages ~50 windows
@@ -234,8 +243,8 @@ across fold counts (`scripts/exp018_efficiency_table.py`) finds the **full 5-fol
 configuration efficiency-optimal** — i.e. the same notebook already staged for probe #3, not a
 reduced variant — because at 2 GPUs decode is the bottleneck for any fold count up to 5, so extra
 folds cost almost nothing in wall-clock while still buying AUC. This beats the deployed exp008
-efficiency model on the formula. `exp008` and the ensemble notebook remain frozen and submittable
-until a replacement is actually probed and scored, per standing policy.
+efficiency model on the formula (Eff −2.036 vs. −1.945, AUC anchored on the two real LB scores).
+**exp018 5-fold is therefore also the final efficiency-track selection**; exp008 (§8) is superseded.
 
 ## 6. Training stability
 
@@ -288,6 +297,9 @@ second mirrored inference pass mostly adds noise from real, non-symmetric imagin
 naive horizontal flip doesn't actually cancel.
 
 ## 8. Efficiency-track model
+
+*Superseded for the final selection by exp018 (§5a), which scores higher AND is efficiency-optimal on
+the formula; exp008 is documented here as the scored (0.885) distilled model it was.*
 
 **exp008**: DINOv2 ViT-S/14 (same backbone family as the smallest ensemble member), T=16 (down
 from 24), 320px (down from 384), distilled from the accepted 3-member ensemble's soft predictions
@@ -359,6 +371,34 @@ Kaggle (`docs/EXPERIMENTS.md` 2026-09-11) — since every fold's checkpoint shar
 `best.pt`, a flattening extraction could silently collide 5 files into 1; weight datasets are now
 staged flat (`fold0_best.pt`…`fold4_best.pt`, no subdirectories) specifically to avoid re-triggering
 that failure mode with data loss instead of a broken import.
+
+**The teardown hang (probe #4, never resolved).** The exp018 + ensemble blend notebook finished all
+its cell code on Kaggle (submission written at 346s, the rendered notebook at 357s) and then hung
+until Kaggle's 9h limit killed it. We found one real bug: `infer_core.prefetch_decode`'s feeder thread
+did a bounded `queue.put()` with no timeout inside a `with ThreadPoolExecutor(...)` block, so if the
+consumer stopped early the put blocked forever and the pool's worker threads (non-daemon by design)
+were never shut down. Fixed with a stop event, a bounded-retry put and an unconditional
+`shutdown(wait=True, cancel_futures=True)` in `finally`, and proven on HPC (six standalone
+`timeout 120` tests at N=1–3, all exit 0, ~0.9s from last work to process exit). **The fixed v3 hung
+again on Kaggle for 10h.** A final v4 ended the notebook with a hard `os._exit(0)`. It exited
+immediately, but Kaggle's papermill runner reports that as `DeadKernelError` and marks the run
+`ERROR`, so it cannot be submitted. Its log also exposed a regression that the fix itself had
+introduced: the GPU worker join was given a 30s timeout. On a T4, the first study through 20 models
+takes longer than that, so 2 of 3 studies were silently written as label priors, and GPU threads were
+still running CUDA work when the interpreter shut down. That is a plausible cause of the v3 hang, but
+not of v2's, which used the untimed join and still hung.
+
+Lessons:
+- An HPC reproduction proves the bug you reproduced, not the failure you saw. On a faster GPU, a
+  timeout-based "safety" fix can hide the very race it creates.
+- A test that checks only the output's shape (row count) cannot tell predictions from fallbacks.
+- The Kaggle runner (papermill/nbclient kernel lifecycle, container teardown) is itself part of the
+  system under test.
+- A code path that has never completed a scored submission carries risk that off-platform testing
+  cannot fully clear.
+
+The `prefetch_decode` fix (which does not involve the timed join) was later pushed to the frozen
+notebooks' code dataset (`rsna-knee-code`) as insurance.
 
 ## 10. What didn't work / was tried and dropped (null and negative results)
 
@@ -470,11 +510,24 @@ rather than fitting the report-label proxy more closely.
 | Probe #2 — efficiency (exp008) | 0.8708 | 0.8850 | −0.0142 | TRUSTWORTHY (< 0.02) |
 | **Probe #3 — exp018 (solo, §5a)** | **0.8816** | **0.9290** | **−0.0474** | Consistent in sign with #1/#2, larger in magnitude — expected (see above), not investigated as an anomaly |
 
-Probe #4 (a rank-space blend of exp018 and the deployed ensemble, weighted 0.75/0.25 by the LB gap
-and a per-label OOF diversity check rather than by OOF) is staged (`notebooks/submit-blend018.ipynb`)
-but not yet submitted at the time of writing. `exp008` and the ensemble notebook remain frozen and
-submittable throughout — no live submission has been withdrawn. Final private-leaderboard rank:
-**pending competition close.**
+**Probe #4 (rank-space blend, exp018 0.75 / deployed ensemble 0.25): attempted and abandoned,
+never scored.** Submitted twice (v2 2026-09-22, v3 2026-09-23); both runs wrote a valid submission
+and then hung at teardown until Kaggle's time limit (9h, 10h), so neither received a score. v3
+already carried the thread-shutdown fix proven on HPC. A last-chance v4 ending in a hard
+`os._exit(0)` did not hang, but Kaggle marked it `ERROR` (`DeadKernelError`), so it could not be
+submitted. Per the pre-agreed guardrail, the blend was then dropped. The root cause is only partially
+identified (§9).
+
+**Final selections: exp018 (probe #3, 0.929) for both the main leaderboard and the efficiency
+track.** It is the highest-scoring submission and also the efficiency-optimal one on the formula
+(§5a), so a separate fast model would give up AUC and gain nothing. This departs from the original
+plan in CLAUDE.md §4 (one ensemble pick plus one distilled pick): that plan assumed the fast model
+would be a smaller copy of the best one, and here the best one is already the fast one. The scored
+notebook versions are unchanged. The frozen notebooks' code dataset received the fixed
+`prefetch_decode` as insurance. A hard-exit final cell was considered for them too, and rejected once
+v4 showed that Kaggle treats it as a failed run. The ensemble
+(0.893) and exp008 (0.885) remain scored and selectable as fallbacks. Final private-leaderboard
+rank: **pending competition close.**
 
 ## 12. Reproducibility
 

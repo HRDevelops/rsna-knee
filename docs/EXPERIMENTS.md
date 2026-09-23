@@ -2210,4 +2210,104 @@ laterality, results) as the current best model, citing `dreaddevelopment/knee-mr
 single-model` and its training-kernel companion as the architectural reference spec, per instruction. §1 and
 §11 updated with the 0.929 result and probe #3/#4 status; §5-§8 (the original DINOv2 pipeline) are unchanged
 -- it remains the code behind both live submissions.
-click is the user's.
+
+## 2026-09-23 — Probe #4 v3 hung again (10h): blend ABANDONED; exp018 FINAL for both tracks
+
+**What happened.** v3 (with the HPC-proven thread-shutdown fix in `rsna-knee-blend018-code`) was
+submitted 2026-09-23 07:41 UTC (Kaggle ref 56487137) and hung ~10h at teardown, exactly like v2 (ref
+56473085, 9h). Both show `COMPLETE` with **no public score**. So the `prefetch_decode` bug was real but
+was not the whole cause of the hang, or not the cause at all. Guardrail invoked: the blend is dropped
+unless the one-line test below works, with no attempts after it.
+
+**v4, the last-chance test (user's hypothesis: CUDA-context / interpreter teardown; the blend is the only
+notebook holding 20 models on 2 GPUs).** The final cell of the notebook now re-reads `submission.csv`,
+re-validates rows/header/NaNs, fsyncs it, prints, flushes stdout/stderr, and then calls `os._exit(0)` as
+the literal last statement. That skips every Python-level cleanup step: thread joins, atexit, CUDA
+destructors. The shared tail lives in `scripts/hard_exit_tail.py` and the generators
+(`build_blend018_notebook.py`, `build_exp018_notebook.py`) append it. It is a notebook-only change: the
+Kaggle notebook was pulled first and was byte-identical to the local copy in every cell. The dataset is
+unchanged. Pushed with `kaggle kernels push`, keeping the pulled metadata (same 6 datasets, competition
+source, T4, pinned docker image). **Kaggle assigned it version 4**, and its commit run started
+immediately.
+
+Two findings from testing the tail locally before pushing it:
+1. **Bug caught and fixed:** the first draft fsync'd a read-only handle, which raises `EBADF` on Windows.
+   Linux normally allows it, but if it had raised on Kaggle the cell would have thrown *before* reaching
+   `os._exit`, turning a hang into an exception (= no score either way). The fix fsyncs through an
+   append-mode handle (writes nothing) inside try/except.
+2. **Known risk, now confirmed locally:** under `jupyter nbconvert --execute` (nbclient) a kernel that
+   calls `os._exit(0)` mid-cell raises **`DeadKernelError: Kernel died`**. nbconvert then exits 1 and
+   writes **no HTML**. Plain `python` exits 0 with the file intact. The user flagged this papermill/nbclient
+   behaviour in the v2 instructions. Whether Kaggle's runner treats this as a failed run (and whether
+   such a version can be scored) is exactly what v4's commit run will show. A related observation:
+   nbclient shuts the kernel down gracefully and then SIGKILLs it (jupyter_client default ~5s) *before*
+   the HTML is written, and v2/v3 did write `__results__.html`. So a Python-level teardown hang inside the
+   kernel should already have been bounded by that kill. That argues the hang is below or outside the
+   kernel's Python (a driver-level GPU release that cannot be killed, or the container/output stage),
+   and `os._exit` would not bypass either. This is unconfirmed; it is recorded because it predicts that
+   v4 may not help.
+
+**v4 commit-run result: `ERROR` after ~200s. It did not hang, and it is not submittable.** From the
+downloaded log (`kaggle kernels output`): models loaded in 78s, the submission was written at 171.2s,
+the hard-exit tail printed its verification line at 171.3s, and at 172.2s papermill reported "Kernel
+died while waiting for execute reply" → **`nbclient.exceptions.DeadKernelError: Kernel died`**. Kaggle
+still rendered `__results__.html` and kept `submission.csv`, but it marked the version `ERROR`. So
+`os._exit` does end the process with no hang, and Kaggle's runner treats that exit as a failed run,
+exactly as the local nbconvert test predicted.
+
+**New bug found in the v4 log (and it was in v3): `[blend018] ... 3 rows, 1 predicted, 2 on prior,
+0 errors`.** Two of the three placeholder studies were silently written as label priors. On the same
+placeholder, exp018 solo predicted 3/3. Cause: my own v3 exit-safety change (`2ec038d`) replaced the
+GPU workers' untimed `w.join()` with `w.join(timeout=30)` in both `run_blend018` and `run_exp018`. On
+T4, the first study through 20 models (with warm-up) takes more than 30s per GPU. The joins therefore
+gave up while the workers were still predicting, the submission was built from whatever `results`
+held at that moment, and the daemon GPU threads were **still running CUDA inference when the notebook
+finished and the interpreter began shutting down**. A daemon thread doing CUDA work during interpreter
+finalization is a known way to hang a process, so this is a plausible, self-inflicted cause of **v3's**
+10h hang. It cannot explain **v2's** 9h hang, because v2 (`e9944c6`) still had the untimed join. The
+HPC proof missed it for two reasons: the H100 finishes well inside 30s, and the tests asserted only the
+row count, not that each row was a real prediction.
+- Fixed in source (not pushed anywhere): both drivers are back to an untimed `w.join()`, which is safe
+  because the sentinels guarantee each worker returns. `test_blend_shutdown.py` and
+  `test_exp018_shutdown.py` now also assert that zero rows equal the label prior.
+- **The scored exp018 (0.929) is unaffected:** `rsna-knee-exp018-code`'s `infer_wmil.py` is 8,245 B,
+  the pre-`2ec038d` version with the untimed join (checked with `kaggle datasets files`).
+- `rsna-knee-code` (updated below) is unaffected: its only change is `prefetch_decode`, whose join is
+  on the feeder thread after the consumer has already received every item it will use. No results
+  are lost.
+
+**Guardrail outcome: the blend is DROPPED.** The one-line test did not produce a submittable run
+(`ERROR`, and 2/3 placeholder rows on the prior). No v5 was pushed. A v5 with the untimed join and no
+`os._exit` would be a genuinely different test, but v2 hung with exactly that join, so there is no
+evidence it would succeed.
+
+**Final state, prepared regardless of v4 (instruction 2):**
+- **`submit-exp018.ipynb` is scored and unchanged:** Kaggle ref 56460279, `COMPLETE`, **public 0.929**.
+  The local notebook was last changed in `5141fe9`, before that submission. It is the final selection for
+  both the main and the efficiency track (efficiency-optimal per the 2026-09-22 table: Eff −2.036 vs
+  exp008 −1.945).
+- **Insurance hard-exit versions: built, then deliberately BACKED OUT.** The tail was added to
+  `submit-exp018.ipynb` and `submit-efficiency.ipynb` as instructed (never pushed, because every CLI
+  push starts a run). Once v4 showed that `os._exit(0)` makes Kaggle's papermill runner end the version
+  in `ERROR`, the "insurance" would have turned any forced re-run into a failed run. Both notebooks
+  were therefore reverted to their scored state (`git checkout`). The tail survives only in
+  `scripts/hard_exit_tail.py` and the blend notebook, as the record of v4.
+- **`rsna-knee-code` updated with the proven `prefetch_decode` fix.** The live dataset was downloaded
+  first. Its `infer_core.py` was byte-identical to commit `d767fdc`, and the only change to that file since
+  then is the fix commit `2ec038d`. Staged the other 6 live files byte-for-byte unchanged (their HEAD
+  copies of `dataset.py`/`model.py` differ, so they were NOT taken from HEAD) and swapped in only
+  `infer_core.py` (20,034 → 23,103 B, the same file as `rsna-knee-blend018-code` v3). Status `ready`,
+  sizes verified with `kaggle datasets files`. This only matters if the ensemble/efficiency notebooks are
+  ever re-run. Their scored submissions are unaffected.
+
+**Probe #4 ledger (final):** attempted and abandoned, never scored. Two Kaggle timeouts (v2 9h, v3 10h),
+both after a `submission.csv` was written, plus one `ERROR` (v4, the deliberate `os._exit` test). Root
+cause **partially identified**:
+- A real `prefetch_decode` thread-lifecycle bug was fixed and proven on HPC.
+- v3's hang is plausibly explained by the timed worker join that same fix introduced (daemon threads
+  still running CUDA work at shutdown).
+- v2's hang, with an untimed join, remains unexplained. The suspicion is CUDA/driver or container
+  teardown with 20 models on 2 GPUs.
+
+The OOF blend analysis stays in `artifacts/exp018_probe4_analysis.md` for the record. No further blend
+attempts.

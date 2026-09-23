@@ -15,7 +15,11 @@
 """Generate notebooks/submit-blend018.ipynb (probe #4: exp018 x0.75 + deployed ensemble x0.25, rank
 space). Re-run after any change to infer_blend018.py."""
 import json
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from hard_exit_tail import HARD_EXIT_TAIL  # noqa: E402
 
 MD = """# RSNA Knee — probe #4 (exp018 x0.75 blended with the deployed 3-member ensemble, rank space)
 
@@ -150,8 +154,7 @@ assert (sub_df[TARGET_COLUMNS] >= 0).all().all() and (sub_df[TARGET_COLUMNS] <= 
 assert list(sub_df.columns) == ["StudyInstanceUID"] + TARGET_COLUMNS, f"header mismatch: {list(sub_df.columns)}"
 sub_df.to_csv(OUT_PATH, index=False)
 print(f"Wrote {OUT_PATH}: {len(sub_df)} rows, all checks passed.")
-sub_df.head()
-"""
+""" + HARD_EXIT_TAIL
 
 
 def cell(kind, src):

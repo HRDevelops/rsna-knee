@@ -175,8 +175,12 @@ def run_exp018(
         pool.shutdown(wait=True, cancel_futures=True)
         for _ in workers:
             q.put(None)
+        # Untimed join (2026-09-23): the sentinels above guarantee each GPU worker returns once the queue
+        # drains. A join(timeout=30) here (2ec038d) gave up on T4 while workers were still predicting,
+        # silently writing label priors for queued studies and leaving daemon threads running CUDA work
+        # at interpreter shutdown (blend018 v4 on Kaggle: 1/3 predicted, 2 on prior, 0 errors).
         for w in workers:
-            w.join(timeout=30)
+            w.join()
 
     prior = np.array([LABEL_PRIORS[c] for c in TARGET_COLUMNS])
     rows = []
