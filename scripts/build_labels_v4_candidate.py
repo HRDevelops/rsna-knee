@@ -1,3 +1,17 @@
+# Copyright 2026 Husnain Rasool
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Phase 4 blend candidate, round 2: labels_v4 = per-label weighted blend of {labels_v3_candidate,
 exp005 image model OOF} — the next noisy-student iteration (CLAUDE.md §6 step 5), now using
 v3 (exp005's training target, ACCEPTED 2026-09-09) as the "report-side" prior instead of the

@@ -1,120 +1,135 @@
 # CV course progress presentation — Oct 15, 5 minutes
 
-Project: RSNA Knee Abnormality Detection (Kaggle 2026) — 12 findings from knee MRI, macro-AUC.
-Every number below is a logged measurement from `docs/EXPERIMENTS.md` (ablation ledger, 2026-09-21).
-Timing budget: 5 slides x ~55 s = ~4:35, leaving ~25 s slack. Status when presenting: modeling closed,
-recipe frozen; final private-leaderboard rank not yet known (competition closes Oct 22).
+Project: RSNA Knee Abnormality Detection (Kaggle 2026): 12 findings from knee MRI, scored by macro-AUC.
+Every number below is a logged measurement from `docs/EXPERIMENTS.md`. Rewritten 2026-09-24 for the full
+four-phase arc. Timing budget: 5 slides × ~55 s ≈ 4:35, leaving ~25 s of slack.
+
+Status when presenting: modeling and code frozen. **exp018 (public LB 0.929) is the final submission for
+both the accuracy and the efficiency track.** The final private-leaderboard rank is not yet known (the
+competition closes Oct 22).
 
 ## Outline (what the five minutes say)
 
-1. **Problem + the twist** (0:00–0:55): 12 binary findings per study, ROC-AUC averaged over labels; only 58 of
-   4,407 training studies have real labels — all 4,407 have a free-text radiology report, but no report at test
-   time. The reports disagree with the expert image-review labels ~18% of the time, systematically.
-2. **Weak supervision via LLM labels** (0:55–1:50): an LLM label engine turns reports into soft labels.
-3. **From a slice-CNN baseline to the 2.5D slot model** (1:50–2:50): the architecture and what each step bought.
-4. **Results** (2:50–3:40): OOF and leaderboard table, two submissions (accuracy + efficiency).
-5. **What didn't work + next steps** (3:40–4:35): the null-result ablation table; what is left.
+1. **Problem + the twist** (0:00–0:55): 58 real labels, 4,407 reports, no reports at test time.
+2. **Phase 1: weak supervision** (0:55–1:50): LLM label engine and a noisy-student round → `labels_v3`.
+3. **Phase 2: the DINOv2 slot model and its ceiling** (1:50–2:50): 0.893, then six null ablations.
+4. **Phases 3–4: audit → exp018** (2:50–3:50): what the audit found, and the window-MIL model that
+   broke the ceiling.
+5. **Results + lessons** (3:50–4:35): the final table, one submission for both tracks, and what was
+   wrong in my own earlier conclusion.
 
 ## Slide 1 — The problem: strong images, weak labels
 
 **On the slide**
-- Input: a knee MRI study = 3–14 series (sagittal / coronal / axial, fat-suppressed or not), 20–45 slices each.
-- Output: 12 probabilities (ACL, MCL, medial/lateral meniscus, 3 OA compartments, effusion, synovitis, Baker's
-  cyst, contusion, fracture). Score = macro ROC-AUC.
-- The catch (a bar graphic): 4,407 training studies → **58 with true labels**, **4,407 with a free-text report**
-  (12+ languages), **0 reports at test time**. Report-vs-expert agreement only ~82%: reports over-call mild disease.
+- Input: a knee MRI study is 3–14 series (sagittal / coronal / axial, fat-suppressed or not), with
+  20–45 slices each.
+- Output: 12 probabilities (ACL, MCL, medial/lateral meniscus, 3 OA compartments, effusion, synovitis,
+  Baker's cyst, contusion, fracture). Score = macro ROC-AUC.
+- The catch (a bar graphic): 4,407 training studies → **58 with true labels**, **4,407 with a free-text
+  report** (12+ languages), **0 reports at test time**. Reports agree with the experts only ~82% of the
+  time, because they over-call mild disease.
 
-**Say (≈55 s):** "Most of the labels I'd need don't exist. What I have is text — radiology reports, in a dozen languages —
-that mostly but not systematically agrees with what the expert panel later called positive. So this is a
-label-quality problem first and an architecture problem second."
+**Say (≈55 s):** "Most of the labels I'd need don't exist. What I have is text: radiology reports in a
+dozen languages that mostly, but systematically not always, agree with what the expert panel called
+positive. So it starts as a label-quality problem."
 
-## Slide 2 — Weak supervision: LLM report labelling
+## Slide 2 — Phase 1: weak supervision via LLM report labelling
 
-**On the slide** (a flow diagram)
-- Report → two open LLMs (Qwen2.5-72B, Llama-3.3-70B; rubric encodes "mild / on-the-fence = negative") →
-  per-finding probability → calibrated against the 58 gold studies (leave-one-out) → soft labels `v2`.
-- Noisy-student round: blend labels with the image model's own out-of-fold predictions → `v3` (accepted only after
-  it beat the previous labels on two independent checks). A second round (`v4`) **regressed** (−0.012) → stopped.
-- Guardrails: 5-fold CV grouped by report cluster (near-duplicate reports never split across folds); the 58 gold
-  studies are never trained on — a tripwire, not a selector.
-- Gain from better labels alone: **+0.014 OOF macro** (same architecture, v2 → v3).
+**On the slide** (flow diagram)
+- Report → two open LLMs (Qwen2.5-72B, Llama-3.3-70B; the rubric encodes "mild / on-the-fence =
+  negative") → per-finding probability → calibrated on the 58 gold studies (leave-one-out) → `v2` soft
+  labels.
+- Noisy-student round: blend the labels with the image model's own out-of-fold predictions → **`v3`**.
+  A second round (`v4`) **regressed**, so I stopped.
+- Guardrails: folds grouped by report cluster (near-duplicate reports never split across folds); the
+  gold-58 studies are never trained on.
+- Gain from better labels alone: **+0.014 OOF macro**, same architecture.
 
-**Say (≈55 s):** "Two LLMs read every report; a rubric tells them the experts' bar for 'positive'. I check them against
-the 58 real labels, then let the image model help clean the labels once — and I stop there, because a second
+**Say (≈55 s):** "Two LLMs read every report against a rubric of the experts' thresholds. I calibrate
+against the 58 real labels, let the image model clean the labels once, and stop there because a second
 round made it worse."
 
-## Slide 3 — Model progression: per-slice CNN → 2.5D slot model
+## Slide 3 — Phase 2: the DINOv2 2.5D slot model, and a ceiling
 
-**On the slide** (architecture diagram, left to right)
-- Starting point in the literature: **MRNet-style** — a 2D CNN on each slice, pool over slices, one model per
-  plane. (Not run by us — no external data, so no baseline number is claimed; it is the design we extend.)
-- Ours: DINOv2 ViT slice encoder → transformer across slices (learned position) → **6 slots**
-  {sag, cor, ax} x {fluid-sensitive or not} with a presence mask → cross-slot transformer → **12 per-finding
-  attention queries** → 12 logits. Right knees flipped so "medial" is always the same side.
-- Measured steps (OOF macro, proxy labels): ViT-S 2.5D **0.849** → ViT-B **0.854** → + v3 labels **0.868** →
-  3-model ensemble **0.874**.
+**On the slide**
+- Architecture: DINOv2 ViT slice encoder → transformer across slices → one CLS token per series →
+  **6 slots** {sag, cor, ax} × {fluid-sensitive or not} → cross-slot transformer → 12 per-finding
+  attention queries.
+- Progress (OOF macro vs proxy labels): ViT-S **0.849** → ViT-B **0.854** → + v3 labels **0.868** →
+  3-model ensemble **0.874**. **Public LB 0.893**, with a distilled efficiency model at 0.885.
+- Then **six bootstrap-tested ablations, all null** (noise SD ≈ 0.004, bar +0.0082):
 
-**Say (≈60 s):** "The standard public knee baseline looks at one slice at a time and pools. I keep that idea but let the model
-attend across slices, then across series, and let each finding pick the series it cares about — so Baker's cyst
-looks at sagittal, patellofemoral arthritis at axial. Bigger backbone gave half a point, better labels gave one and a half."
+  | Ablation | Δ OOF |
+  |---|---|
+  | 448 px | −0.0001 |
+  | 32 slices | −0.0001 |
+  | ACL head init | +0.0010 |
+  | report-text auxiliary loss ×2 | +0.0036 / +0.0012 |
+  | 6-model re-selected ensemble | +0.0020 |
 
-## Slide 4 — Results
+  ConvNeXt-V2 was redundant (corr 0.93); a 3D ResNet was killed.
 
-| | OOF macro-AUC (proxy) | Public LB | Runtime |
-|---|---|---|---|
-| 3-model ensemble ({ViT-B v3, ViT-B v2, ViT-S v3}) | 0.8744 | **0.893** | ~62 min projected, T4 x2 (from H100 profiling) |
-| Distilled single ViT-S (efficiency track) | 0.8708 | **0.885** | 7.5 min on H100 (T4 run: check log) |
-| Leaderboard top (for scale) | — | ~0.95–0.96 | — |
+**Say (≈60 s):** "This model got me to 0.893. Then I tested every remaining lever properly, with
+pre-registered bars, the same folds and bootstrap noise, and all of them were null. At the time I
+concluded the ceiling was the labels. That turned out to be wrong."
 
-- The leaderboard beat my own validation by 0.014–0.019: my OOF is measured against noisy report-derived labels,
-  so it *understates* true performance (on the 58 clean labels the ACL AUC is ~0.99).
-- Efficiency track: one distilled model within **0.008** of the ensemble for a fraction of the compute.
-- Honest gap: ~6–7 points to the top. I treat that as structural, not tuning noise.
+## Slide 4 — Phases 3–4: the audit, and exp018
 
-**Say (≈50 s):** "Two submissions: the accuracy one scores 0.893; a single small model distilled from the ensemble scores
-0.885 and runs in minutes, which is what the efficiency prize rewards. The board beat my validation, which is
-consistent with my validation labels being the noisy side."
+**On the slide**
+- **Audit** (18 public kernels, plus my own cache audit):
+  - A public 20-model DINOv2 ensemble also stalls at 0.891, so the ceiling is the *model family*.
+  - One single CoAtNet-2 with attention over slice windows reaches 0.924.
+  - Things I had never varied: my crop was **115 mm** vs the public 130–140 mm, and every finding
+    only ever saw a per-series summary.
+  - My own audit found a laterality defect: sagittal right knees were flipped front-to-back rather
+    than medial-lateral, and 34% of studies had no side normalization. A geometric rule fixed it,
+    with 99% agreement.
+- **exp018** (diagram): 140 mm, 336 px → windows of 3 adjacent slices as RGB (≤54 per study) →
+  fully fine-tuned CoAtNet-2 → **per-finding attention over all windows** (no series bottleneck).
+  My labels, my folds, pre-registered kill rule.
 
-## Slide 5 — Ablation of nulls, and what's next
+**Say (≈60 s):** "Instead of another ablation, I looked at what everyone else was doing. The DINOv2
+family was stuck everywhere, and one very different design wasn't. I re-implemented it on my own labels
+with a pre-registered kill rule, and fixed a laterality bug I found along the way. I changed several
+things at once, so I can't tell you which one mattered: that's the honest caveat."
 
-**On the slide** — after the recipe landed, seven principled levers, all null (Δ OOF macro vs the base model;
-noise SD ≈ 0.004):
+## Slide 5 — Results + lessons
 
-| Lever | Hypothesis | Δ macro | Verdict |
-|---|---|---|---|
-| 448 px (rebuilt cache) | small findings are resolution-limited | −0.0001 | null |
-| 32 slices (vs 24) | slice-count-limited | −0.0001 | null |
-| ACL-specific head init | ACL is a head deficit | +0.0010 | null (ACL low = label noise) |
-| Report-text auxiliary loss | reports hold signal beyond 12 labels | +0.0036 / +0.0012 | null vs bar (+0.0082) |
-| ConvNeXt-V2 backbone | different family adds diversity | — | redundant (corr 0.93) |
-| 3D ResNet | architectural diversity | 0.693 solo | killed |
-| 6-model ensemble | more members | +0.0020 | not adopted (2.9x cost) |
+| | OOF | Gold-58 | Public LB | Runtime (T4 × 2) |
+|---|---|---|---|---|
+| DINOv2 3-model ensemble | 0.8744 | 0.8953 | 0.893 | ~62 min (projected) |
+| DINOv2 distilled (old efficiency pick) | 0.8708 | 0.888 | 0.885 | minutes |
+| **exp018 CoAtNet-2 Window-MIL (final, both tracks)** | **0.8816** | **0.9091** | **0.929** | **~15–17 min (projected)** |
+| Leaderboard top, for scale | — | — | ~0.95–0.96 | — |
 
-Also *not tested, by decision*: ordinal severity targets (labels already encode mild vs definite).
+- **+0.036 LB** from one model family. It is also **efficiency-optimal** (score −2.036 vs −1.945),
+  because at 2 GPUs image decoding, not the model, bounds the runtime.
+- The LB beat OOF every time, because OOF is scored against noisy report labels.
+- Lessons:
+  - A run of null ablations tells you *that* family is saturated, not what the ceiling is.
+  - Survey outside your own pipeline before concluding "label ceiling".
 
-- Takeaway: the plateau is a *label* ceiling, not a resolution or architecture ceiling.
-- Next: freeze and submit (both notebooks), final-selection by Oct 22, then open-source code + weights + video.
-  Re-open modelling only for a merger partner or a new insight.
-
-**Say (≈55 s):** "After the recipe stopped improving I tested every remaining lever properly — pre-registered bars, same folds,
-noise estimated by bootstrap. All null. That's informative: more resolution, more slices and smarter heads don't help
-because the ceiling is the labels. Next steps are engineering: lock both submissions and release the code."
+**Say (≈45 s):** "One model now does both jobs: it's the most accurate and the cheapest to run. The
+lesson I'd pass on is that six null results proved my model family was saturated, not that the
+problem was. Next is open-sourcing code, weights and the write-up."
 
 ## Likely questions (prep)
 
-- *Why not train directly on the 58 labels?* Too few; used them as calibration/validation only.
-- *Why ViT/DINOv2?* Strong general features; ViT-B beat ViT-S (+0.005), DINOv3 and ConvNeXt did not beat DINOv2.
-- *How do you know the OOF gap isn't leakage?* Folds grouped by report cluster; the LB *beat* OOF (leakage would
-  push the other way); gold-58 never trained on.
-- *Is the 0.893 vs top 0.95 gap a bug?* Diagnosed per label against a published benchmark; most of the apparent
-  ACL deficit was proxy-label noise; the remainder is treated as unresolved.
-- *MRNet baseline number?* Not run (external-data licence); the progression numbers start at our first working
-  2.5D model.
+- *Why not train directly on the 58 labels?* Too few; they are used for calibration and validation
+  only.
+- *Which change in exp018 made the difference?* Unknown: backbone, windows vs slots, 140 mm FOV and
+  laterality all changed together, and no ablation separates them. The per-label pattern (MCL +0.080,
+  lateral meniscus +0.031) hints at laterality and the wider FOV, but that is a hint, not a result.
+- *Isn't exp018 just a copy of a public notebook?* It is the same design, re-implemented, trained on my
+  own labels and folds, with no third-party weights or labels, and epoch selection that never used the
+  gold set (the reference selected on it).
+- *How do you know OOF gains aren't leakage?* Folds are grouped by report cluster, and the LB *beat* OOF
+  (leakage would push the other way).
+- *Did you ensemble exp018 with the old model?* I tried a blend. It hung on Kaggle's runner twice and
+  never scored, so I dropped it.
 
-## Items to verify before Oct 15 (I have not confirmed these)
+## Items to verify before Oct 15
 
-- Ensemble runtime on Kaggle: the ~62 min T4 x2 figure on slide 4 is a projection from H100 profiling, not a
-  read-out of the Kaggle run log — replace with the notebook's logged runtime.
-- Efficiency notebook runtime on a single T4: you quoted ~13 min; our logs show 7.5 min on H100 and a 12–19 min T4
-  projection — use the Kaggle log's number.
-- Final selection state and any private-LB result, if published before Oct 15.
+- Runtimes for the ensemble (~62 min) and exp018 (~15–17 min) are projections from H100 profiling,
+  not read from a full hidden-test Kaggle log. Say "projected".
+- The final selection state and any private-LB result, if published before Oct 15.

@@ -543,6 +543,8 @@ YAML-config under `configs/`, with every training/labeling run logged chronologi
 this writeup summarizes; if any number here and `EXPERIMENTS.md` ever disagree, trust
 `EXPERIMENTS.md`. To rebuild a specific result: find its config in `configs/`, its data lineage
 (which `labels_v*` / `folds.parquet` it used) in the matching `EXPERIMENTS.md` entry, and run
-`scripts/train.py --config <path> --fold <n>`. Model cards for the 4 deployed models
-(`exp003`, `exp005`, `exp006`, `exp008`) are in `docs/model_cards/`. Code is Apache-2.0 licensed
-throughout (see license headers).
+`scripts/train.py --config <path> --fold <n>` (DINOv2 slot models) or `scripts/train_wmil.py --config
+<path> --fold <n>` (exp018). Model cards for the final model (`exp018`) and the four earlier deployed
+models (`exp003`, `exp005`, `exp006`, `exp008`) are in `docs/model_cards/`. The repository overview is
+the root `README.md`, and the final submission state is `docs/SUBMISSION_FINAL.md`. Code is Apache-2.0
+licensed throughout (see license headers).

@@ -1,3 +1,17 @@
+# Copyright 2026 Husnain Rasool
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Scale-ladder comparison: exp002 (DINOv2-S) vs exp003 (DINOv2-B) vs exp004 (DINOv3-S, archived
 dropped in EXPERIMENTS.md 2026-09-08 — kept here only as a placeholder row if its artifacts ever
 reappear), per the 2026-09-08 decision rule: keep a variant only if OOF macro gain >= +0.004, or a
