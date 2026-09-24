@@ -1,0 +1,32 @@
+# exp021 (2026-09-24): exp018 RETRAINED WITH SEED 43, all 5 folds -- the seed-ensemble half of a
+# 10-checkpoint prob-mean (5 x seed 42 from exp018 + 5 x seed 43 from here). Motivated by the Phase-5
+# finding that two runs of the identical exp018 path diverge by 0.013 fold-val at epoch 3 (GPU
+# nondeterminism): if single-run variance is that large, averaging independent runs should help.
+# Byte-identical to exp018's config below except `experiment` and `seed`; no EMA, no img_size.
+experiment: exp021_coatnet2_wmil_seed43
+seed: 43
+data:
+  cache_dir: ${RSNA_ROOT}/data/cache_wmil
+  manifest_dir: ${RSNA_ROOT}/artifacts/cache_manifests_wmil
+  labels: ${RSNA_ROOT}/artifacts/labels/labels_v3_candidate.parquet
+  folds: ${RSNA_ROOT}/artifacts/folds.parquet
+  final_side: ${RSNA_ROOT}/artifacts/final_side.csv
+model:
+  arch: coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k
+  res: 384
+  grad_checkpointing: true
+  head_dropout: 0.2
+train:
+  epochs: 16
+  batch_studies: 8
+  k_train: 12
+  bb_lr: 3.0e-5
+  head_lr: 1.0e-3
+  weight_decay: 0.02
+  pct_start: 0.15
+  grad_clip: 3.0
+  topk: 3
+  precision: bf16
+aug:
+  intensity_jitter: 0.1
+  laterality_swap_prob: 0.0

@@ -20,13 +20,13 @@ Weights are random (`pretrained=False`): inference latency depends on shapes and
 weight VALUES, so an untrained model times identically to a trained one. Windows come from the real
 exp018 cache so the window-count distribution per study is the true one.
 
-The projection reuses the established method (docs/SUBMISSION_RUNBOOK.md, profile_decode_vs_model_exp018.py):
-model time x3.5 for T4, decode unchanged (CPU-bound), dual-T4 is data-parallel so per-study cost is
-max(decode, (decode + model_t4)/2). Rather than trusting absolute numbers, the headline is the RATIO to
-the exp018 baseline measured in the same run on the same hardware and the same windows, applied to
-exp018's own accepted 15.3-min dual-T4 projection.
+The projection reuses the established method (docs/SUBMISSION_RUNBOOK.md): model time x3.5 for T4, decode
+unchanged (CPU-bound). Dual-T4 is reported two ways (see project()): the conservative formula inherited
+from profile_decode_vs_model_exp018.py, and the accepted one behind the efficiency table. The RATIO column
+is relative to exp018 (5 passes) measured in the same job on the same windows.
 
     python scripts/bench_arch_runtime.py --n-studies 40
+    python scripts/bench_arch_runtime.py --archs coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k --n-folds 5 10
 """
 from __future__ import annotations
 
@@ -113,18 +113,26 @@ def bench(arch: str, stacks: list, presents: list, res: int, n_folds: int, devic
     return elapsed / max(len(n_windows), 1), float(np.mean(n_windows)), note
 
 
-def project(model_per_study_h100: float, decode_per_study: float, n_test: int) -> tuple[float, float]:
-    """(T4x1 minutes, T4x2 minutes) for n_test studies, same formula as profile_decode_vs_model_exp018."""
+def project(model_per_study_h100: float, decode_per_study: float, n_test: int) -> tuple[float, float, float]:
+    """(T4x1, T4x2 conservative, T4x2 accepted) minutes for n_test studies.
+
+    conservative = max(decode, (decode + model_t4) / 2), from profile_decode_vs_model_exp018.py: charges
+    each GPU stream the full decode, i.e. double-counts it.
+    accepted     = max(decode, model_t4 / 2), the formula behind the efficiency table's 15.3 min / -2.0362:
+    infer_wmil.py decodes in ONE shared thread pool feeding both GPUs, so decode is paid once and the
+    model work is split across the two devices."""
     model_t4 = model_per_study_h100 * T4_MODEL_MULTIPLIER
     t4x1 = (decode_per_study + model_t4) * n_test / 60
-    t4x2 = max(decode_per_study, (decode_per_study + model_t4) / 2) * n_test / 60
-    return t4x1, t4x2
+    t4x2_cons = max(decode_per_study, (decode_per_study + model_t4) / 2) * n_test / 60
+    t4x2_acc = max(decode_per_study, model_t4 / 2) * n_test / 60
+    return t4x1, t4x2_cons, t4x2_acc
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--n-studies", type=int, default=40)
-    ap.add_argument("--n-folds", type=int, default=5)
+    ap.add_argument("--n-folds", type=int, nargs="+", default=[5],
+                    help="model passes per study; several values are timed in the same job")
     ap.add_argument("--res", type=int, default=384)
     ap.add_argument("--n-test-studies", type=int, default=1300)
     ap.add_argument("--limit-minutes", type=float, default=35.0, help="exp019 runtime kill rule")
@@ -153,29 +161,29 @@ def main() -> None:
 
     results = []
     for arch in args.archs:
-        per_study, mean_w, note = bench(arch, stacks, presents, args.res, args.n_folds, device, dtype)
-        results.append((arch, per_study, mean_w, note))
-        print(f"  {arch}: {per_study:.3f} s/study ({args.n_folds} folds), {mean_w:.1f} windows/study"
-              f"{'  [' + note + ']' if note else ''}", flush=True)
+        for nf in args.n_folds:
+            per_study, mean_w, note = bench(arch, stacks, presents, args.res, nf, device, dtype)
+            results.append((arch, nf, per_study, mean_w, note))
+            print(f"  {arch} x{nf}: {per_study:.3f} s/study, {mean_w:.1f} windows/study"
+                  f"{'  [' + note + ']' if note else ''}", flush=True)
 
-    base = next((r for r in results if r[0] == BASELINE_ARCH), None)
-    print(f"\n=== dual-T4 projection for {args.n_test_studies} studies "
+    base = next((r for r in results if r[0] == BASELINE_ARCH and r[1] == 5), None)
+    print(f"\n=== T4 projection for {args.n_test_studies} studies "
           f"(decode {EXP018_DECODE_S_PER_STUDY:.3f} s/study, model x{T4_MODEL_MULTIPLIER}) ===")
-    print(f"{'arch':<42} {'s/study(H100)':>13} {'ratio':>7} {'T4x1':>8} {'T4x2':>8} {'scaled T4x2':>12} {'verdict':>9}")
-    for arch, per_study, _mean_w, _note in results:
+    print(f"{'arch':<40} {'passes':>6} {'s/study H100':>12} {'ratio':>6} {'T4x1':>7} "
+          f"{'T4x2 cons':>10} {'T4x2 acc':>9} {'verdict':>8}")
+    for arch, nf, per_study, _mean_w, _note in results:
         if per_study != per_study:  # NaN
-            print(f"{arch:<42} {'CONSTRUCT FAILED':>13}")
+            print(f"{arch:<40} {nf:>6} {'UNUSABLE':>12}")
             continue
-        t4x1, t4x2 = project(per_study, EXP018_DECODE_S_PER_STUDY, args.n_test_studies)
-        ratio = per_study / base[1] if base and base[1] == base[1] else float("nan")
-        # Anchor on exp018's accepted 15.3-min projection: scale its MODEL component by the measured
-        # ratio and keep the decode floor, rather than trusting this run's absolute numbers.
-        scaled = t4x2 if arch == BASELINE_ARCH else t4x2
-        verdict = "OK" if scaled <= args.limit_minutes else "ABORT"
-        print(f"{arch:<42} {per_study:>13.3f} {ratio:>7.2f} {t4x1:>7.1f}m {t4x2:>7.1f}m {scaled:>11.1f}m {verdict:>9}")
-    print(f"\nexp018's accepted reference projection: {EXP018_T4X2_MINUTES} min dual-T4. If this run's "
-          f"baseline row differs materially from that, trust the RATIO column, not the absolute minutes.")
-    print(f"Kill rule: projected dual-T4 > {args.limit_minutes:.0f} min => abort exp019 before training.")
+        t4x1, cons, acc = project(per_study, EXP018_DECODE_S_PER_STUDY, args.n_test_studies)
+        ratio = per_study / base[2] if base else float("nan")
+        verdict = "OK" if cons <= args.limit_minutes else "OVER"   # judged on the stricter formula
+        print(f"{arch:<40} {nf:>6} {per_study:>12.3f} {ratio:>6.2f} {t4x1:>6.1f}m {cons:>9.1f}m "
+              f"{acc:>8.1f}m {verdict:>8}")
+    print(f"\nReference: exp018 5-fold's accepted dual-T4 projection is {EXP018_T4X2_MINUTES} min. "
+          f"Latency measured with ONE study per forward (inference shape) -- this does not test trainability.")
+    print(f"Verdict column: stricter (conservative) formula vs the {args.limit_minutes:.0f}-min limit.")
 
 
 if __name__ == "__main__":

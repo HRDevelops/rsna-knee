@@ -2446,3 +2446,64 @@ submissions are unspent. Kept from this phase: the `img_size` kwarg, the config-
 unless a config asks for it, EMA state persisted through the wall-clock-guard resume, evaluation moved
 AFTER `best.pt` is written and wrapped in try/except so an experimental branch can never cost a
 completed run its primary output), and `scripts/bench_arch_runtime.py`.
+
+### User decisions on Phase 5 (2026-09-24)
+
+- **exp019: DROPPED.** Reasons given: confounded (capacity + BN batch + 224->384 position tables),
+  efficiency-negative (+0.0043 AUC needed just to break even), and fold-0 gating is noise-dominated.
+  Not relaunched in any form. The `img_size` kwarg stays (harmless, default `None`).
+- **exp020: null ACCEPTED.** EMA does not improve on top-3 weight averaging; the EMA code path stays in
+  `train_wmil.py`, off unless a config enables it.
+
+## 2026-09-24 — exp021: exp018 SEED ENSEMBLE (seed 43, 5 folds) — PRE-REGISTRATION + LAUNCH
+
+**Motivation.** Phase 5's one real finding: two runs of the IDENTICAL exp018 path (same seed, config, data)
+diverged by 0.013 fold-val at epoch 3 from GPU nondeterminism. If single-run variance is that large, a
+second independent run averaged with the first should buy accuracy for nothing but compute.
+
+**Design (fixed before any result).**
+- `configs/exp021_coatnet2_wmil_seed43.yaml` = exp018's config with only `experiment` and `seed` (42 -> 43)
+  changed (YAML-parsed diff: exactly those two keys). No EMA, no `img_size`. All 5 folds.
+- Training code: the only commits touching the training path since exp018 trained are `af68154` (licence
+  comment, parsed code verified unchanged) and `9e954c6` (EMA + `img_size`, both config-gated and absent
+  from this config). So seed 43 runs the same code path exp018 ran.
+- **Candidate = 10-checkpoint prob-mean** (5 x seed 42 from the scored exp018 + 5 x seed 43). Reported for
+  exp018 alone, exp021 alone, and the mean: OOF vs `labels_v2_final` with the paired cluster bootstrap
+  (same machinery as exp016/exp018), and gold-58 with its own bootstrap CI so its width at n=58 is
+  visible (`scripts/exp021_seed_ensemble.py`). Gold-58 is advisory. Also reported: the seed-42-vs-43
+  per-fold spread, i.e. the run-to-run noise floor this project has never actually measured.
+- **Probe rule (user's):** one Kaggle submission is reserved for the 10-checkpoint ensemble. It is a
+  MAIN-TRACK candidate only; exp018 (56460279) stays locked as the efficiency pick. **If the probe does not
+  beat 0.929, modeling is permanently closed.**
+
+**Inference check (instruction 3), BEFORE any code or staging change.** The scored `infer_wmil.py`
+(8,245 B, byte-identical to `e9944c6`, re-confirmed against the live dataset listing) neither globs nor
+hardcodes 5 folds: `run_exp018(..., weight_paths: list[Path], ...)` takes a list of any length,
+`load_fold_models` loads every path, and `gpu_worker` prob-means over all of them (`np.mean(probs, axis=0)`),
+which is exactly the requested 10-checkpoint prob-mean. The globbing is in the NOTEBOOK cell
+(`sorted(WEIGHTS_DIR.glob("fold*_best.pt"))`, one directory). Consequence: the scored code deploys
+UNCHANGED; the only edit is the notebook cell that builds the list, and that is what the commit check
+tests. Side facts: each GPU holds a full replica set (10 x fp32 CoAtNet-2 ~= 2.9 GB per T4, fits); the
+wall-clock guard drops the LATER models in the list first (won't trigger: ~27 min projected vs a 6.8 h
+budget).
+
+**Staging (no exp018 asset touched).** New dataset `rsna-knee-exp021-weights` holds ONLY the five
+`fold{k}_seed43_best.pt`, lean format identical to exp018's (`scripts/stage_exp021_kaggle.py` refuses to
+stage unless all 5 folds exist, and asserts arch/res/no-img_size). `notebooks/submit-exp021.ipynb`
+(`scripts/build_exp021_notebook.py`) attaches the scored `rsna-knee-exp018-code` and the scored
+`rsna-knee-exp018-weights` unchanged plus the new dataset. It asserts exactly 5 + 5 checkpoints, so a
+missing attachment fails loudly instead of silently running a 5-model "ensemble". Its inference and
+validation cells (3, 4) are byte-identical to the scored exp018 notebook; no `os._exit`.
+
+**Launch record.** Job **27017** (array 0-4), `slurm/train_exp021.sbatch`, via `safe_sbatch.py`
+(15 GB projected, 199.6 GB budget). Runtime benchmark for 5 vs 10 checkpoints: job 27018.
+
+**Launch mistake, caught and fixed before it cost anything.** The first submission (job 27016) passed
+`--array=0-4` AFTER the script path. `safe_sbatch.py` forwards everything after `--` verbatim, so the
+option reached the sbatch script as `$1` (ignored), and SLURM created a SINGLE job with no
+`ArrayTaskId`, which would have trained fold 0 only (`FOLD` defaults to 0). Caught by checking
+`scontrol show job` for the array id, cancelled by explicit id, resubmitted as
+`safe_sbatch.py -- --array=0-4 slurm/train_exp021.sbatch`. The Phase-5 exp019/exp020 launches used the
+same wrong syntax and were correct only by accident (both intended fold 0). Also found: a
+`DISK_PROJECTION_GB` header is taken as the TOTAL for the submission, not multiplied by the array
+size, so the header here is 15 (5 x 3 GB), not exp018's per-task 3.

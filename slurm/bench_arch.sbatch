@@ -22,4 +22,5 @@ cd "$RSNA_ROOT/code"
 export PYTHONPATH="${PYTHONPATH:-}:$(pwd)"
 export HF_HUB_OFFLINE=1     # pretrained=False everywhere in this script; no hub access needed
 
-python scripts/bench_arch_runtime.py --n-studies 40 --n-folds 5
+# Arguments after the script path are forwarded (default: the Phase-5 exp018-vs-CoAtNet-3 screen).
+if [ "$#" -gt 0 ]; then python scripts/bench_arch_runtime.py "$@"; else python scripts/bench_arch_runtime.py --n-studies 40 --n-folds 5; fi
