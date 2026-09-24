@@ -1,0 +1,43 @@
+# exp019 (2026-09-24, Phase 5): exp018's Window-MIL pipeline with the backbone scaled up to CoAtNet-3.
+# Everything else is exp018 verbatim: 140mm/336px cache, 3-adjacent-slice windows, labels_v3, same folds,
+# same seed, same schedule, same top-3 epoch averaging. Capacity is the only variable.
+#
+# BACKBONE SUBSTITUTION (deliberate, flagged). The instruction named
+# `coatnet_rmlp_3_rw_384.sw_in12k_ft_in1k`. That checkpoint does not exist: timm publishes NO pretrained
+# coatnet_rmlp_3 at any resolution (`timm.list_models("coatnet_rmlp_3*", pretrained=True)` -> []). The
+# only genuine CoAtNet-3 capacity step with pretrained weights is `coatnet_3_rw_224.sw_in12k`
+# (163.6M params vs exp018's 72.9M, 1536-d vs 1024-d features), used here. Two consequences:
+#   1. It is an in12k checkpoint with no ft_in1k stage -- a slightly different (not worse) init lineage.
+#   2. It is 224-native, so img_size=384 must be passed at construction to resize its relative-position
+#      tables; a plain 384 forward otherwise fails (576 vs 196 mismatch). Verified before launch.
+# Because the pretrained resolution (224) no longer matches our working resolution (384), this is a
+# capacity test confounded with a position-table interpolation -- a null result would not cleanly mean
+# "more capacity does not help".
+experiment: exp019_coatnet3_wmil
+seed: 42
+data:
+  cache_dir: ${RSNA_ROOT}/data/cache_wmil
+  manifest_dir: ${RSNA_ROOT}/artifacts/cache_manifests_wmil
+  labels: ${RSNA_ROOT}/artifacts/labels/labels_v3_candidate.parquet
+  folds: ${RSNA_ROOT}/artifacts/folds.parquet
+  final_side: ${RSNA_ROOT}/artifacts/final_side.csv
+model:
+  arch: coatnet_3_rw_224.sw_in12k
+  res: 384
+  img_size: 384           # required for this 224-native backbone; unset (and unused) for exp018
+  grad_checkpointing: true
+  head_dropout: 0.2
+train:
+  epochs: 16
+  batch_studies: 8
+  k_train: 12
+  bb_lr: 3.0e-5
+  head_lr: 1.0e-3
+  weight_decay: 0.02
+  pct_start: 0.15
+  grad_clip: 3.0
+  topk: 3
+  precision: bf16
+aug:
+  intensity_jitter: 0.1
+  laterality_swap_prob: 0.0

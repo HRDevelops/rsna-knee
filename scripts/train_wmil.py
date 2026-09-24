@@ -194,7 +194,26 @@ def main() -> None:
     lossf = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
     model = WindowMIL(m["arch"], pretrained=True, drop=m.get("head_dropout", 0.2),
-                      grad_checkpointing=m.get("grad_checkpointing", True)).to(device)
+                      grad_checkpointing=m.get("grad_checkpointing", True),
+                      img_size=m.get("img_size")).to(device)
+
+    # ---- optional model EMA (exp020). Absent from a config => not constructed, so exp018 is unchanged.
+    # decay=0.9999 has a 1/(1-d)=10,000-step horizon, but a fold here is only ~440 steps x 16 epochs =
+    # ~7,040 steps: without warm-up the EMA would still carry 0.9999^7040 = 49.5% of the ImageNet INIT
+    # at the end of training. ModelEmaV3's warm-up ramps the effective decay from ~0 so the average is
+    # never init-dominated; several decays can be tracked at once (one lerp per step each) and the best
+    # is chosen by FOLD-VALIDATION AUC only -- gold-58 stays quarantined, as everywhere else here.
+    ema_cfg = t.get("ema", {}) or {}
+    emas: list = []
+    if ema_cfg.get("enabled", False):
+        from timm.utils import ModelEmaV3  # noqa: E402
+        for dcy in ema_cfg.get("decays", [0.9999]):
+            emas.append({"decay": float(dcy),
+                         "ema": ModelEmaV3(model, decay=float(dcy),
+                                           use_warmup=bool(ema_cfg.get("use_warmup", True))),
+                         "best": {"val_auc": -1.0, "epoch": -1}})
+        print(f"EMA enabled: decays {[e['decay'] for e in emas]} warmup={ema_cfg.get('use_warmup', True)} "
+              f"eval_from_epoch={ema_cfg.get('eval_from_epoch', 0)}", flush=True)
     bb = [p for n, p in model.named_parameters() if n.startswith("backbone.")]
     head = [p for n, p in model.named_parameters() if not n.startswith("backbone.")]
     opt = torch.optim.AdamW([{"params": bb, "lr": t["bb_lr"]}, {"params": head, "lr": t["head_lr"]}],
@@ -211,6 +230,10 @@ def main() -> None:
     if args.resume == "auto" and ckpt_path.exists() and not args.smoke:
         ck = torch.load(ckpt_path, map_location=device)
         model.load_state_dict(ck["model"]); opt.load_state_dict(ck["optimizer"]); sched.load_state_dict(ck["scheduler"])
+        for i, e in enumerate(emas):  # EMA weights must survive the wall-clock-guard resume path
+            if "ema" in ck and i < len(ck["ema"]):
+                e["ema"].module.load_state_dict(ck["ema"][i]["state"])
+                e["best"] = ck["ema"][i]["best"]
         start_epoch, hist = ck["epoch"] + 1, ck["hist"]
         topk = json.loads(topk_path.read_text()) if topk_path.exists() else []
         print(f"resumed from epoch {start_epoch}", flush=True)
@@ -239,10 +262,31 @@ def main() -> None:
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), t["grad_clip"])
             opt.step(); sched.step()
+            for e in emas:
+                e["ema"].update(model)
             tot += loss.item(); n_b += 1
         val_df = predict(model, val_loader, m["res"], device, dtype)
         val_auc, _ = macro_auc(val_df, val_truth)
         rec = {"epoch": epoch, "train_loss": tot / max(n_b, 1), "val_auc": val_auc, "sec": time.time() - t0}
+
+        # EMA branches are evaluated on the SAME fold-validation set and selected on it alone. Skipping
+        # the first few epochs costs nothing informative (an early EMA trails a fast-moving model) and
+        # keeps the epoch-time overhead down.
+        for e in emas:
+            if epoch < int(ema_cfg.get("eval_from_epoch", 0)):
+                continue
+            ema_df = predict(e["ema"].module, val_loader, m["res"], device, dtype)
+            ema_auc, _ = macro_auc(ema_df, val_truth)
+            rec[f"val_auc_ema{e['decay']}"] = ema_auc
+            print(f"  EMA(decay={e['decay']}): fold-val macro-AUC {ema_auc:.4f}", flush=True)
+            if ema_auc > e["best"]["val_auc"]:
+                e["best"] = {"val_auc": ema_auc, "epoch": epoch}
+                if True:  # saved even under --smoke, so the smoke run exercises the finalisation block
+                    safe_torch_save(
+                        {"model": {kk: v.detach().cpu() for kk, v in e["ema"].module.state_dict().items()},
+                         "arch": m["arch"], "res": m["res"], "img_size": m.get("img_size"),
+                         "targets": TARGET_COLUMNS, "ema_decay": e["decay"], "epoch": epoch, "val_macro_auc": ema_auc},
+                        exp_dir / f"best_ema{e['decay']}.pt", min_gb=5.0)
         hist.append(rec)
         print(f"epoch {epoch}: loss {rec['train_loss']:.4f} | fold-val macro-AUC {val_auc:.4f} | {rec['sec']:.0f}s", flush=True)
 
@@ -257,8 +301,12 @@ def main() -> None:
             del topk[t["topk"]:]
             topk_path.write_text(json.dumps(topk))
         if not args.smoke:
-            safe_torch_save({"model": model.state_dict(), "optimizer": opt.state_dict(),
-                             "scheduler": sched.state_dict(), "epoch": epoch, "hist": hist}, ckpt_path)
+            ck_out = {"model": model.state_dict(), "optimizer": opt.state_dict(),
+                      "scheduler": sched.state_dict(), "epoch": epoch, "hist": hist}
+            if emas:
+                ck_out["ema"] = [{"decay": e["decay"], "state": e["ema"].module.state_dict(),
+                                  "best": e["best"]} for e in emas]
+            safe_torch_save(ck_out, ckpt_path)
         if time.time() - t_start > args.max_hours * 3600 and epoch < epochs - 1:
             print(f"wall-clock guard after epoch {epoch}; stopping before finalisation (re-run resumes)", flush=True)
             return
@@ -279,14 +327,46 @@ def main() -> None:
 
     if not args.smoke:
         safe_torch_save({"model": model.state_dict(), "arch": m["arch"], "res": m["res"],
+                         "img_size": m.get("img_size"),
                          "targets": TARGET_COLUMNS, "topk_epochs": [e["epoch"] for e in topk],
                          "val_macro_auc": val_macro, "gold58_macro_auc": gold_macro}, exp_dir / "best.pt", min_gb=3.0)
         for e in topk:
             (exp_dir / e["file"]).unlink(missing_ok=True)
+
+    # ---- evaluate each EMA branch head-to-head with the top-k average, on BOTH fold-val and gold-58.
+    # Selection already happened (fold-val only); gold-58 here is a read-out, exactly as for the
+    # top-k model above, so the comparison the decision gate needs is in one place.
+    # Deliberately AFTER best.pt is written and wrapped in try/except: this is the experimental branch,
+    # and nothing in it may cost a completed run its primary, exp018-equivalent output.
+    ema_summary: dict[str, float] = {}
+    for e in emas:
+        ckf = exp_dir / f"best_ema{e['decay']}.pt"
+        if not ckf.exists():
+            print(f"EMA(decay={e['decay']}): no checkpoint at {ckf.name} (nothing evaluated)", flush=True)
+            continue
+        try:
+            ema_model = WindowMIL(m["arch"], pretrained=False, drop=m.get("head_dropout", 0.2),
+                                  grad_checkpointing=False, img_size=m.get("img_size")).to(device)
+            ema_model.load_state_dict(torch.load(ckf, map_location=device)["model"])
+            e_val, _ = macro_auc(predict(ema_model, val_loader, m["res"], device, dtype), val_truth)
+            e_gold_df = predict(ema_model, gold_loader, m["res"], device, dtype)
+            e_gold, _ = macro_auc(e_gold_df, gold_truth)
+            e_gold_df.to_parquet(exp_dir / f"gold58_predictions_ema{e['decay']}.parquet", index=False)
+            ema_summary[f"ema{e['decay']}_val_macro_auc"] = e_val
+            ema_summary[f"ema{e['decay']}_gold58_macro_auc"] = e_gold
+            ema_summary[f"ema{e['decay']}_epoch"] = e["best"]["epoch"]
+            print(f"EMA(decay={e['decay']}, best epoch {e['best']['epoch']}): fold-val {e_val:.4f} | "
+                  f"gold-58 {e_gold:.4f}   [top-{len(topk)} avg: fold-val {val_macro:.4f} | "
+                  f"gold-58 {gold_macro:.4f}]", flush=True)
+            del ema_model
+            torch.cuda.empty_cache()
+        except Exception as exc:  # noqa: BLE001
+            print(f"EMA(decay={e['decay']}) evaluation FAILED ({type(exc).__name__}: {exc}); the top-k "
+                  f"result above is unaffected", file=sys.stderr, flush=True)
     (exp_dir / "history.json").write_text(json.dumps({"hist": hist, "topk": topk}, indent=1))
     pd.DataFrame([{
         "experiment": cfg["experiment"], "fold": args.fold, "epochs_completed": len(hist),
-        "val_macro_auc": val_macro, "gold58_macro_auc": gold_macro,
+        "val_macro_auc": val_macro, "gold58_macro_auc": gold_macro, **ema_summary,
         **{f"val_{kk}": v for kk, v in val_pl.items()}, **{f"gold_{kk}": v for kk, v in gold_pl.items()},
     }]).to_csv(exp_dir / "summary.csv", index=False)
     print(f"done -> {exp_dir}", flush=True)

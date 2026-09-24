@@ -2346,3 +2346,103 @@ per attempt", is **not supported**, because v2 did not execute `prefetch_decode`
 statement is narrower: v2's cause is unknown; v3 carried a real regression of ours that may or may not
 have caused its hang. The METHOD_WRITEUP §9 paragraph was corrected to match. Scored submissions are
 unaffected: exp018's code dataset predates `2ec038d` and never contained either change.
+
+## 2026-09-24 — PHASE 5: exp019 (CoAtNet-3 capacity) ABORTED, exp020 (EMA) NULL. exp018 stands.
+
+Two fold-0 probes against the exp018 fold-0 baseline. Neither promotes to 5 folds; no Kaggle submission
+was spent. exp018 (LB 0.9290) remains the final pick for both tracks.
+
+### Baseline (exp018 fold 0, for reference)
+
+`artifacts/exp018_fold0_gate.md` + `fold0/history.json`: fold-val macro **0.9567** (vs labels_v3, the
+selection metric; best single epoch 0.9564, top-3 = 15/12/13), fold-0 OOF vs labels_v2_final **0.8883**
+(n=879, the cross-experiment comparable number), gold-58 **0.9063**, **370 s/epoch** (369-372 across all
+16, ~99 min/fold on one H100).
+
+### exp019 — CoAtNet-3: never produced a result. Two blockers.
+
+**1. The specified checkpoint does not exist.** `coatnet_rmlp_3_rw_384.sw_in12k_ft_in1k` is not in timm,
+and `timm.list_models("coatnet_rmlp_3*", pretrained=True)` returns `[]` -- there are NO pretrained
+coatnet_rmlp_3 weights at any resolution. The only real CoAtNet-3 capacity step is
+`coatnet_3_rw_224.sw_in12k` (163.6M params vs exp018's 72.9M, 1536-d features, in12k with no ft_in1k
+stage). It is 224-native, so `img_size=384` must be passed at construction; without it a 384 forward
+fails (`576 vs 196`). `WindowMIL` gained an optional `img_size` kwarg (default `None` => exp018's
+construction is unchanged) and the weights were pre-downloaded to the shared HF cache, since compute
+nodes run `HF_HUB_OFFLINE=1`.
+
+**2. It cannot train at this batch shape (job 26951, FAILED at the first step):**
+`RuntimeError: Expected canUse32BitIndexMath(input) && canUse32BitIndexMath(output) to be true`.
+CoAtNet-3's MBConv blocks expand 4x internally; at 8 studies x 12 windows = 96 windows/forward at 384px
+the stage-0 tensor passes 2^31 elements and `F.conv2d` has no 64-bit indexing path. Measured ceiling
+(job 26953): 96 windows FAIL; **48 OK** (1.36e9 elements, 0.63 x INT_MAX); 32 and 16 fine. This is a
+property of the architecture at this shape, so it would recur on any GPU.
+
+**Why it was not relaunched.** Every fix reduces windows per forward (chunked `encode`, smaller
+`batch_studies` + accumulation, or smaller `k_train`), and the same probe found CoAtNet-3 carries **25
+`BatchNormAct2d` layers**, so *any* of them changes training-time BN statistics relative to exp018.
+exp019 would then vary capacity AND BN batch AND the 224->384 position-table interpolation -- three
+variables, one fold. Combined with the efficiency cost below, the result would not have been
+interpretable. Paused for a user decision; not relaunched unilaterally.
+
+**Runtime (the kill rule) did pass, measured before training** (job 26948, H100, same 40 real cached
+studies and the same 51.5 windows/study for both archs):
+
+| backbone | s/study (5 folds, H100) | ratio | dual-T4, 1,300 studies |
+|---|---|---|---|
+| `coatnet_rmlp_2_rw_384` (exp018) | 0.356 | 1.00x | 15.3 min accepted / 21.1 conservative |
+| `coatnet_3_rw_224` (exp019) | 0.537 | 1.51x | **20.4 min accepted / 28.0 conservative** |
+
+Both are under the 35-min limit. Two notes. (a) `scripts/bench_arch_runtime.py` inherited the
+*conservative* formula from `profile_decode_vs_model_exp018.py`, `max(decode, (decode+model)/2)`, which
+double-counts decode per GPU stream; the efficiency table behind the accepted -2.0362 uses
+`max(decode, model/2)` because decode is one shared thread pool feeding both GPUs. Both columns are
+reported rather than only the flattering one. (b) At 20.4 min the runtime term rises 0.0283 -> 0.0378,
+so exp019 would need **+0.0043 macro-AUC just to break even** on the efficiency score; it could only
+ever have been a main-track candidate.
+
+**Process failure worth recording:** that benchmark ran ONE study at a time (the inference shape) and so
+validated latency but never the training batch shape that failed. A capacity screen must include a
+trainability check at the real training shape; a latency number alone does not clear an architecture.
+
+### exp020 — model EMA: NULL against the weight averaging exp018 already does.
+
+**Decay had to be reconsidered before launch.** The instruction specified `ModelEmaV2` at decay 0.9999.
+A fold is ~440 steps x 16 epochs = ~7,040 steps, but 0.9999 has a 1/(1-d) = 10,000-step horizon: the EMA
+would finish training still carrying `0.9999^7040` = **49.5% of the ImageNet initialisation**. So
+`ModelEmaV3` (same algorithm, warm-up ramp available) was used with `use_warmup=True`, and TWO decays
+were tracked in one run -- the requested 0.9999 and a 0.999 whose ~1,000-step (~2.3-epoch) horizon
+actually fits the schedule. Selection was on fold-validation only; gold-58 stayed quarantined.
+
+**Fold-0 result (job 26952, 16/16 epochs, ~4.4h with the extra EMA validation passes):**
+
+| model | fold-val macro | gold-58 macro |
+|---|---|---|
+| **top-3 epoch average (the exp018 mechanism)** | **0.9533** | **0.9038** |
+| EMA decay 0.999 | 0.9532 (-0.0001) | 0.9029 (-0.0009) |
+| EMA decay 0.9999 + warm-up | 0.9136 (-0.0397) | 0.8613 (-0.0425) |
+| *exp018 fold 0, for reference (different run)* | *0.9567* | *0.9063* |
+
+**Verdict: EMA adds nothing.** The 0.999 branch ties the top-3 average to within 0.0001/0.0009 -- far
+inside noise -- and 0.9999 loses badly even with warm-up, since its horizon still exceeds the run. This
+is the outcome the config pre-registered as likely: **exp018 already averages its top-3 epochs' weights**,
+so this tested "EMA vs top-3 weight averaging", not "EMA vs nothing". The two mechanisms overlap, and the
+one already in the recipe is not improved on.
+
+**The cross-run comparison is noise-dominated, and the within-run one is not.** exp020's training path is
+identical to exp018's (EMA never touches the weights used for training), same seed and config, yet the
+epoch-3 fold-val differs by 0.013 (exp018 0.9158 vs exp020 0.9024) -- GPU nondeterminism in the backward
+kernels. So exp020-vs-exp018 deltas of a few thousandths (including top-3 0.9038 vs 0.9063) mean nothing.
+The EMA-vs-top-3 comparison is immune to this: both come from the SAME run and the same weight
+trajectory, which is why the branches were built into one run rather than compared across runs.
+
+### Decision gate
+
+Promotion required a clear gold-58 improvement over exp018 fold 0 (0.9063) inside the 35-min envelope.
+- **exp019: no result** (cannot train at this batch shape without confounding the test). NOT promoted.
+- **exp020: no improvement** (best EMA 0.9029 < 0.9063, and ties its own run's top-3). NOT promoted.
+
+Neither advances. **exp018 stays the final selection for both tracks**, and both remaining Kaggle
+submissions are unspent. Kept from this phase: the `img_size` kwarg, the config-gated EMA path (off
+unless a config asks for it, EMA state persisted through the wall-clock-guard resume, evaluation moved
+AFTER `best.pt` is written and wrapped in try/except so an experimental branch can never cost a
+completed run its primary output), and `scripts/bench_arch_runtime.py`.

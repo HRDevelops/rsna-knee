@@ -274,11 +274,17 @@ class WindowMIL(nn.Module):
     c_{b,o} = sum_k a h, logit_o = <c_o, clsW_o> + b_o. No per-series token, no slot bottleneck."""
 
     def __init__(self, arch: str = "coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k", pretrained: bool = True,
-                 n_targets: int = 12, drop: float = 0.2, grad_checkpointing: bool = False):
+                 n_targets: int = 12, drop: float = 0.2, grad_checkpointing: bool = False,
+                 img_size: int | None = None):
         super().__init__()
         import timm
+        # img_size is only forwarded when explicitly set, so the default construction (exp018's
+        # coatnet_rmlp_2_rw_384, whose pretrained resolution already IS our 384) is unchanged.
+        # A 224-native backbone (e.g. coatnet_3_rw_224) needs it: its relative-position tables are
+        # built for the 224 feature map and a 384 forward otherwise fails with a 576-vs-196 mismatch.
+        kw = {} if img_size is None else {"img_size": int(img_size)}
         self.backbone = timm.create_model(arch, pretrained=pretrained, num_classes=0, in_chans=3,
-                                          global_pool="avg")
+                                          global_pool="avg", **kw)
         if grad_checkpointing:
             self.backbone.set_grad_checkpointing(True)
         d = self.backbone.num_features

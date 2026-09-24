@@ -1,0 +1,48 @@
+# exp020 (2026-09-24, Phase 5): exp018's recipe EXACTLY, plus model EMA. Nothing else changes -- same
+# backbone, cache, labels, folds, seed, LR schedule, epochs and top-3 epoch averaging -- so any fold-0
+# difference vs exp018 fold 0 is attributable to EMA alone.
+#
+# Decay choice. The instruction specified timm's ModelEmaV2 at decay=0.9999. A fold here is ~440 steps x
+# 16 epochs = ~7,040 steps, while decay=0.9999 has a 1/(1-d) = 10,000-step horizon: without warm-up the
+# EMA would end training still carrying 0.9999^7040 = 49.5% of the ImageNet INITIALISATION, and would
+# lose for a reason having nothing to do with EMA. So we use timm's ModelEmaV3 (the same algorithm with
+# a warm-up ramp available) and track TWO decays in the same run -- the requested 0.9999 and a 0.999
+# whose ~1,000-step horizon (~2.3 epochs) actually fits this schedule. One lerp per step each; the cost
+# is the extra validation passes, not the averaging.
+#
+# Caveat worth stating up front: exp018 ALREADY averages the weights of its top-3 epochs, which is
+# itself a weight-averaging method. exp020 therefore tests "EMA vs top-3 weight averaging", not "EMA vs
+# nothing", and the two mechanisms overlap -- a null result here would not mean weight averaging is
+# useless, only that EMA adds nothing on top of the averaging already in the recipe.
+experiment: exp020_coatnet2_wmil_ema
+seed: 42
+data:
+  cache_dir: ${RSNA_ROOT}/data/cache_wmil
+  manifest_dir: ${RSNA_ROOT}/artifacts/cache_manifests_wmil
+  labels: ${RSNA_ROOT}/artifacts/labels/labels_v3_candidate.parquet
+  folds: ${RSNA_ROOT}/artifacts/folds.parquet
+  final_side: ${RSNA_ROOT}/artifacts/final_side.csv
+model:
+  arch: coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k
+  res: 384
+  grad_checkpointing: true
+  head_dropout: 0.2
+train:
+  epochs: 16
+  batch_studies: 8
+  k_train: 12
+  bb_lr: 3.0e-5
+  head_lr: 1.0e-3
+  weight_decay: 0.02
+  pct_start: 0.15
+  grad_clip: 3.0
+  topk: 3
+  precision: bf16
+  ema:
+    enabled: true
+    decays: [0.9999, 0.999]
+    use_warmup: true        # ramps the effective decay; without it 0.9999 is init-dominated here
+    eval_from_epoch: 4      # an EMA trailing a fast-moving early model carries no signal worth a val pass
+aug:
+  intensity_jitter: 0.1
+  laterality_swap_prob: 0.0
