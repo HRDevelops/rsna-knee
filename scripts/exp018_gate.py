@@ -84,7 +84,7 @@ def main() -> int:
               "Caveat: one fold, n=58 gold; a pass means 'not worse than the deployed recipe on the tripwire'. "
               "The fold-0 OOF comparison above is the informative number."]
     if passed and not args.no_launch:
-        cmd = [sys.executable, "scripts/safe_sbatch.py", "--", "--exclude=g005,g006", "--array=1-4",
+        cmd = [sys.executable, "scripts/safe_sbatch.py", "--", "--array=1-4",
                "slurm/train_wmil.sbatch", "configs/exp018_coatnet2_wmil_v3labels.yaml"]
         r = subprocess.run(cmd, cwd=root / "code", capture_output=True, text=True)
         lines += ["", "Launch of folds 1-4 via safe_sbatch:", "```", (r.stdout + r.stderr).strip()[-1500:], "```"]

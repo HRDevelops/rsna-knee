@@ -16,7 +16,6 @@
 #SBATCH --gres=gpu:1
 #SBATCH --time=06:00:00
 #SBATCH --mem=96GB
-#SBATCH --exclude=g005,g006
 
 set -euo pipefail
 source ~/.bashrc

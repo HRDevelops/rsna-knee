@@ -215,3 +215,12 @@ someone else. Note `sergiy.bu` also has two multi-day `N/A` jobs on g002, so thi
   not baked into `train.sbatch` because the offending job is transient. Check `squeue -w <node>` for
   `N/A`-TRES jobs before heavy launches. A run that OOMs within ~1 minute with a large "other process"
   figure is this, not a code bug.
+- **2026-09-24: node exclusions removed from every script.** `--exclude=g005,g006` had been hardcoded
+  into `train_exp019/020/021.sbatch`, `smoke_wmil_ema.sbatch` and `scripts/exp018_gate.py`'s launch
+  command, against the "transient, don't bake it in" rule above. Standing exclusion of 2 of 6 nodes
+  cut available GPUs by a third (8 of 24) and delayed jobs by days, which costs far more than the
+  failure it prevents (an OOM within ~1 min, recoverable with `--resume auto`). Policy: **no node
+  exclusion in any committed script.** If a task hits the co-tenant OOM, resubmit just that task with a
+  one-off `-- --exclude=<node>` on the `safe_sbatch.py` command line. State at removal time:
+  `squeue -w g005` showed no no-GRES jobs; `squeue -w g006` showed two (`sergiy.bubin`, the account
+  behind the 2026-09-18 collision), so a task placed on g006 may still hit it.
