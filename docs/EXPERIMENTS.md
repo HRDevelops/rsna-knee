@@ -2507,3 +2507,35 @@ option reached the sbatch script as `$1` (ignored), and SLURM created a SINGLE j
 same wrong syntax and were correct only by accident (both intended fold 0). Also found: a
 `DISK_PROJECTION_GB` header is taken as the TOTAL for the submission, not multiplied by the array
 size, so the header here is 15 (5 x 3 GB), not exp018's per-task 3.
+
+**Runtime projection for 10 checkpoints (instruction 4).** Derived, not re-benchmarked. The benchmark
+job for 5 vs 10 checkpoints (27018) was cancelled unrun: `bench_arch_runtime.py` times N passes of the
+same model per study, so 10 passes is 2x the 5-pass cost *by construction* and a new measurement adds
+nothing. Inputs are the measured H100 cost (job 26948: 0.356 s/study for 5 checkpoints, 40 real studies,
+51.5 windows/study) and the accepted decode figure (0.704 s/study, Kaggle-CPU-rescaled). The only true
+T4 measurement available is Kaggle's own; its commit run sees just 3 placeholder studies.
+
+| checkpoints | H100 s/study | T4 model s/study | dual-T4 accepted | dual-T4 conservative |
+|---|---|---|---|---|
+| 5 (exp018) | 0.356 | 1.246 | **15.3 min** (reproduces the accepted figure exactly) | 21.1 min |
+| 10 (exp021 ensemble) | 0.712 | 2.492 | **27.0 min** | 34.6 min |
+
+At 10 checkpoints the GPUs, not decode, bound runtime (1.246 s/study per T4 vs 0.704 decode), so
+runtime roughly doubles. **Efficiency (main-track candidate only; exp018 56460279 stays the efficiency
+pick):** Eff = −AUC/0.45 + s/32400. exp018 = −2.0361. The 10-checkpoint ensemble at 27.0 min carries a
+runtime term of 0.0500 (vs 0.0283), so it needs **LB AUC ≥ 0.9387 (+0.0097) just to tie exp018 on
+efficiency** (0.9451, +0.0161, under the conservative formula). At an LB of 0.929 / 0.932 / 0.935 its
+Eff would be −2.0144 / −2.0211 / −2.0278, all worse than exp018's. This confirms it cannot be the
+efficiency pick.
+
+**Scheduling (2026-09-25).** After ~5.9 h all five tasks were still pending: all 24 H100 GPUs were held
+by other users' jobs with ≥1 d 20 h of time limit left (our QOS allows 8 GPUs; we held 0), and SLURM
+estimated the start at 2026-09-26 21:04. The array requested 6 h per task while a fold needs ~1 h 45 m;
+lowered the pending job to `TimeLimit=03:00:00` (`scontrol update`; users can lower but not raise), which
+makes it far easier to backfill into early gaps. 3 h rather than 2 h because `safe_torch_save` is a plain
+`torch.save` (not atomic), so a SLURM kill mid-write could corrupt `checkpoint.pt`; 1.8x headroom over
+exp018's 1 h 41 m makes that very unlikely. The sbatch file now also sets `--max-hours 2.6` so future
+launches stop cleanly after an epoch before the limit. 27017 itself keeps the 5.5 h guard it was
+submitted with. Node exclusions were removed from all scripts the same day (see HPC_WORKFLOW.md §3.5a).
+A local DNS outage (Cloudflare WARP answering NXDOMAIN for the cluster host) briefly made a watcher report
+a false "done"; watchers now treat a failed `ssh` as unknown, not finished.

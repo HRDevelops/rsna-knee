@@ -5,6 +5,9 @@
 # so this is 5 folds x 3GB. Launch: python scripts/safe_sbatch.py -- --array=0-4 slurm/train_exp021.sbatch
 # (sbatch options BEFORE the script, after `--`; placed after the script they reach it as $1 instead).
 # DISK_PROJECTION_GB: 15
+# Time: a fold needs ~1h45m (exp018: ~1h41m). 3h (not 6h) makes the job far easier to backfill. --max-hours 2.6
+# sits BELOW the SLURM limit on purpose: the script then stops cleanly after a completed epoch (checkpoint written)
+# and a resubmit resumes, instead of SLURM killing it mid-`torch.save` -- checkpoint writes are not atomic.
 #SBATCH --job-name=exp021
 #SBATCH --partition=H100
 #SBATCH --qos=issai-h100
@@ -14,7 +17,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1
-#SBATCH --time=06:00:00
+#SBATCH --time=03:00:00
 #SBATCH --mem=96GB
 
 set -euo pipefail
@@ -30,4 +33,4 @@ nvidia-smi --query-gpu=index,uuid,memory.used,memory.total --format=csv,noheader
 
 FOLD=${SLURM_ARRAY_TASK_ID:-${FOLD:-0}}
 python scripts/train_wmil.py --config configs/exp021_coatnet2_wmil_seed43.yaml --fold "$FOLD" \
-    --out "$RSNA_ROOT/artifacts" --resume auto --max-hours 5.5
+    --out "$RSNA_ROOT/artifacts" --resume auto --max-hours 2.6
