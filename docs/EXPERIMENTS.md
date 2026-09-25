@@ -2756,6 +2756,35 @@ kind in the project; every earlier runtime was an H100 projection.
   0.027 lower. **Select the 2-fold as the efficiency pick if its public LB displays >= 0.903**; otherwise keep 5-fold
   exp018 (56460279).
 
+### B — exp022 RESULT: FAILS all three gate criteria. No staging, no probe.
+
+All 5 folds (job 27469) completed cleanly, ~36 min each (the batch-shape check predicted ~35). Fold-val
+0.9395-0.9498, gold-58 0.8912-0.8995 per fold. `artifacts/exp022_gate.md` (`scripts/exp022_gate.py`, run
+unmodified from the pre-registered commit `0263983`):
+
+| | OOF macro | gold-58 |
+|---|---|---|
+| exp022 solo (DINOv2-B Window-MIL) | 0.8709 | 0.8993 |
+| exp018 solo | 0.8816 | 0.9091 |
+| exp021 (10 ckpt) | 0.8840 | 0.9111 |
+
+1. **Diversity: FAIL.** Mean per-label OOF correlation with exp018 = **0.944** (bar < 0.90). Only ACL 0.882, MCL
+   0.877 and Lateral Meniscus 0.870 are below the bar; the other nine are 0.95-0.98.
+2. **Blend gain: FAIL.** w(exp022) = 0.50 rank blend with exp021: **−0.0032** OOF [−0.0045, −0.0019].
+   Informational weights are all negative, even w = 0.25 (−0.0007 [−0.0013, −0.0001]).
+3. **Gold-58: FAIL.** −0.0039 at w = 0.50.
+
+**Reading.** In the SAME Window-MIL pipeline (same cache, windows, MIL head, labels, folds), swapping the backbone
+from CoAtNet-2 to DINOv2-B gives a weaker model that ranks studies almost the same way. The pipeline, not the
+backbone, determines what the model sees and how it pools it, so a second backbone inside it adds no
+independent evidence. This is consistent with, not contrary to, the audit: the public lineage's +0.017 DINOv2
+gain came from a DINOv2 arm in a **different pipeline** (slot attention over a different representation and label
+table). The project's own closest analogue, exp018 + the deployed DINOv2 SLOT ensemble, measured +0.0036 OOF at 0.5
+on 2026-09-21. That was probe #4, which never scored (Kaggle teardown hangs) and was dropped by user decision.
+
+Workstream B is closed. The DINOv2-B `backbone_kwargs` / `img_size` plumbing stays (off by default). exp022 used
+~3 GPU-hours; no Kaggle submission was spent.
+
 ### D — slice-spacing audit (zero-GPU; `scripts/audit_slice_spacing.py`, job 27468; `artifacts/slice_spacing_audit.md`)
 
 All 4,407 studies, 20,539 slot-series, 0 read errors. "Effective step" = physical gap between ADJACENT
