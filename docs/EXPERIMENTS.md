@@ -2655,3 +2655,72 @@ post-hoc tweaks, cross-label reranker, calibration. Probe budget: at most 2 (exp
   reduction, inference-only depth TTA. The window-density idea is testable on OOF with the existing
   exp018/exp021 checkpoints (a denser re-cache, no retraining) but is outside the four Phase-6 workstreams,
   so it is reported, not acted on.
+
+### C — step 1: where exp018's decode time goes (`scripts/profile_decode_stages.py`, job 27467)
+
+200 fold-0 studies, exp018's exact decode logic re-run with per-stage timers, ZEN4 node, 4 CPUs allocated
+(the node reports 192 visible CPUs, the known `os.cpu_count()` quirk; the stage breakdown is valid, absolute
+times are not Kaggle's). Single thread: **0.712 s/study**.
+
+| stage | ms/study | share |
+|---|---|---|
+| **header**: `dcmread(stop_before_pixels)` on EVERY file of each chosen series, only for ordering | **337.0** | **47.3%** |
+| resample: `apply_modality_lut` + `scipy.ndimage.zoom(order=1)` + crop | 172.5 | 24.2% |
+| read: full `dcmread` of each selected file | 97.8 | 13.7% |
+| norm: `normalize_uint8` percentile clip | 67.9 | 9.5% |
+| order + geometry | 14.0 | 2.0% |
+| **pixel**: the actual JPEG-Lossless / JPEG-2000 decompression | **13.9** | **1.9%** |
+| glob count / orientation | 3.9 | 0.5% |
+
+Work per study: 5.4 series present, 4.7 chosen; **167 headers read; 60.5 slices pixel-decoded; 60.6 stacked,
+all used** (every stacked slice is in >= 1 window). So "decode only what the windows use" is already true of
+the pixels: exp018 never processes unchosen series and never decodes an unused slice. The cost is **file
+opening and header parsing** (all ~35 files per chosen series, to order them), not decompression.
+
+Output-preserving candidates measured:
+- **`specific_tags` header reads** (only the 8 tags ordering/geometry use): **0/200 studies differ** (bit-identical
+  stacks and presence masks), but header time only 337 -> 316 ms (-6%), total -3%. pydicom still walks each file;
+  the cost is per-file I/O, not per-tag parsing.
+- **Decode worker threads:** 3 -> **0.248 s/study**, 4 -> **0.195 s/study** (-21%), near-linear, so the GIL is not
+  the limit. The scored notebook uses `cpu_count() - 1` = 3 on Kaggle's 4 CPUs.
+- **Excluded:** `cv2.resize` (the audit's resampler) changes pixel values, so it fails the float-tolerance rule.
+
+Whether any of this moves the SCORED runtime depends on whether Kaggle's 2 x T4 run is decode-bound at all
+(model 0.623 s/study/GPU projected vs decode 0.704). That is being measured on Kaggle itself
+(`hrdevelops/rsna-knee-profile-t4`).
+
+### D — slice-spacing audit (zero-GPU; `scripts/audit_slice_spacing.py`, job 27468; `artifacts/slice_spacing_audit.md`)
+
+All 4,407 studies, 20,539 slot-series, 0 read errors. "Effective step" = physical gap between ADJACENT
+CACHED slices, i.e. what one 3-slice window advances by, after exp018's 6-94% linspace subsampling.
+
+| slot | native gap p50 (p10/p90) mm | effective step p50 (p10 / p90) mm | studies with duplicated slices |
+|---|---|---|---|
+| Sagittal FS | 3.30 (3.00 / 4.50) | 4.50 (3.30 / 6.60) | 7.0% |
+| Sagittal non-FS | 3.30 (3.00 / 4.50) | 6.60 (5.12 / 8.80) | 0.1% |
+| Coronal FS | 3.50 (3.30 / 4.80) | 7.20 (6.28 / 10.00) | 0.0% |
+| Coronal non-FS | 3.60 (3.30 / 5.00) | **13.20** (10.00 / 15.00) | 0.0% |
+| Axial | 3.85 (3.30 / 5.20) | 9.90 (6.60 / 13.20) | 0.0% |
+
+The 64-slice budget subsamples coronal/axial series 2-4x: a coronal non-FS window spans ~40 mm.
+
+**exp018 OOF by effective-step quartile** (vs labels_v2_final; Δ = quartile minus the other three, study-bootstrap
+95% CI): 10 of 12 cells are inside noise; two are "clearly worse": **Axial Q1 (4.4-7.8 mm) −0.0201
+[−0.0315, −0.0069]** and **Coronal Q2 (6.6-7.2 mm) −0.0157 [−0.0293, −0.0053]**. But Axial Q2, the next-finest,
+is the BEST cell (+0.0211 [+0.0120, +0.0300]); the pattern is non-monotonic, with no dose-response.
+
+**Confound check (zero-GPU):**
+- **Coronal Q2 has the same native gap (3.50 vs 3.60 mm), slice count (30 vs 30) and coverage (102 vs 104 mm) as
+  the rest.** Nothing about its spacing differs, so its deficit (ACL −0.059, PF OA −0.030) cannot be a spacing
+  effect; it is protocol / case-mix.
+- **Axial Q1 = short axial series**: coverage 96 vs 129 mm (30 vs 34 slices at a finer 3.30 vs 4.20 mm gap). Its
+  deficit spreads to labels that are not axial-driven (ACL −0.061, MCL −0.038, Synovitis −0.046), and OOF rises with
+  axial COVERAGE (Q1 0.869, Q2 0.875, Q3 0.895, Q4 0.883). That points to less scanned anatomy and/or site mix,
+  which no preprocessing can restore.
+- Report-template clusters are not concentrated in either quartile (top-5 clusters hold 6-8% vs 10-11%).
+
+**Verdict: no action.** Two quartiles are statistically worse, but neither deficit is attributable to slice
+spacing, so there is no spacing fix to make (the rule was "act only if a quartile is clearly worse"; these are
+worse, but not BECAUSE of spacing). Side note for A's denser-window idea: across studies, finer effective steps
+show no dose-response, which weakly lowers the expected gain. Densifying WITHIN a study is a different
+experiment and this audit does not rule it out.
