@@ -2689,6 +2689,46 @@ Whether any of this moves the SCORED runtime depends on whether Kaggle's 2 x T4 
 (model 0.623 s/study/GPU projected vs decode 0.704). That is being measured on Kaggle itself
 (`hrdevelops/rsna-knee-profile-t4`).
 
+### C — step 2: MEASURED on Kaggle's own hardware — the scoring run is MODEL-bound (premise falsified)
+
+`hrdevelops/rsna-knee-profile-t4` v1 (`scripts/build_kaggle_profile_notebook.py`): the SCORED exp018 code
+(`infer_wmil.py` 8,245 B) and weights, unchanged, on 150 TRAIN studies from the competition mount (which does
+include `train_series/`), on the real notebook machine (4 CPUs, 2 x Tesla T4). First measurement of this
+kind in the project; every earlier runtime was an H100 projection.
+
+| measured on Kaggle | value | what the project had assumed |
+|---|---|---|
+| model, 5 folds, ONE T4, inputs pre-decoded | **4.479 s/study** | 0.356 x 3.5 = 1.246 |
+| decode, 3 threads, cold page cache (what scoring sees) | 0.931 s/study | 0.704 |
+| decode, 4 threads (ran second: WARM cache, so not comparable) | 0.615 s/study | — |
+| **scored `run_exp018` end to end, 2 x T4, 3 decode threads** | **369.0 s / 150 = 2.46 s/study -> ~53 min per 1,300** | **15.3 min** |
+
+- **The T4/H100 ratio for CoAtNet-2 is ~12.6x, not 3.5x.** The 3.5x multiplier came from the DINOv2 ViT notebooks
+  (2026-09-11) and was never validated for CoAtNet; it was applied to every CoAtNet projection since.
+- **The run is heavily model-bound**: per study, 2 GPUs need 4.479 / 2 = 2.24 s against a 0.93 s decode floor
+  that is fully overlapped. **No decode speed-up can move exp018's (5-fold) scoring runtime**, so C's premise
+  ("runtime = decode") is false for the 5-fold model and no decode change is being staged for it.
+- **Corrections this forces (records built on the wrong projection):**
+  - exp018's actual efficiency score is ~**−1.966** (0.929, ~53 min), not −2.0362 (0.929, 15.3 min).
+  - **"exp018 5-fold is efficiency-optimal" (2026-09-22 table) is FALSE under measured timing.** Each fold costs
+    ~9.7 min on 2 x T4 (0.448 s/study), so fold count is the dominant efficiency lever:
+
+    | folds | bound (cold decode 0.931) | runtime per 1,300 | AUC (0.929 + gold-58 all-subset Δ) | Eff |
+    |---|---|---|---|---|
+    | 5 | model | 48.5 min | 0.9290 | −1.9746 |
+    | 4 | model | 38.8 min | 0.9288 | −1.9921 |
+    | 3 | model | 29.1 min | 0.9283 | −2.0090 |
+    | **2** | decode | **20.2 min** | 0.9267 | **−2.0220** |
+    | 1 | decode | 20.2 min | 0.9223 | −2.0122 |
+
+    With the warm 4-thread decode (0.615) 1 fold reaches −2.0249 and 2 folds −2.0234. At <= 2 folds decode IS the
+    bottleneck, so C's worker-count change matters there (and only there).
+  - exp021's 10 checkpoints are ~97 min of GPU time on 2 x T4, not ~27 min; still far inside the 9 h cap.
+  - The exp018/exp021 runtime and efficiency figures in METHOD_WRITEUP §5a/§11, README, the exp018 model card,
+    SUBMISSION_FINAL, the CV talk and the video outline all carry the old projection and need correcting.
+- **Decision needed (user):** the fold-count sweep was explicitly SKIPPED on the premise "decode-bound, saves
+  nothing". The measurement falsifies that premise. Not acted on; raised for decision.
+
 ### D — slice-spacing audit (zero-GPU; `scripts/audit_slice_spacing.py`, job 27468; `artifacts/slice_spacing_audit.md`)
 
 All 4,407 studies, 20,539 slot-series, 0 read errors. "Effective step" = physical gap between ADJACENT
