@@ -2539,3 +2539,37 @@ launches stop cleanly after an epoch before the limit. 27017 itself keeps the 5.
 submitted with. Node exclusions were removed from all scripts the same day (see HPC_WORKFLOW.md §3.5a).
 A local DNS outage (Cloudflare WARP answering NXDOMAIN for the cluster host) briefly made a watcher report
 a false "done"; watchers now treat a failed `ssh` as unknown, not finished.
+
+## 2026-09-25 — exp021 RESULT: 10-checkpoint seed ensemble is a small, real OOF gain
+
+All 5 seed-43 folds completed (job 27017, each ~1 h 40 m, all on g002, no co-tenant OOM, 16/16 epochs).
+`artifacts/exp021_seed_ensemble.md` (`scripts/exp021_seed_ensemble.py`, 1,000 paired cluster-bootstrap
+reps over 3,681 report clusters, 4,349 non-gold studies vs `labels_v2_final`; gold-58 with its own
+1,000-rep study bootstrap):
+
+| model | ckpts | OOF macro | Δ OOF vs exp018 (95% CI) | P(Δ≤0) | gold-58 (95% CI) | Δ gold-58 (95% CI) |
+|---|---|---|---|---|---|---|
+| exp018 (seed 42) | 5 | 0.8816 | — | — | 0.9091 [0.8807, 0.9348] | — |
+| exp021 (seed 43) | 5 | 0.8805 | −0.0011 [−0.0031, +0.0008] | 0.863 | 0.9088 [0.8798, 0.9333] | −0.0003 [−0.0075, +0.0083] |
+| **10-ckpt prob-mean** | 10 | **0.8840** | **+0.0024 [+0.0014, +0.0033]** | **0.000** | 0.9111 [0.8834, 0.9359] | +0.0021 [−0.0023, +0.0065] |
+
+**Reading.**
+- **The ensemble gain is real but small.** +0.0024 OOF, with the whole 95% CI above zero and none of
+  the 1,000 bootstrap resamples at or below zero. On gold-58 it is +0.0021, but that CI spans zero, as
+  expected at n=58. Per label it helps most where the two seeds disagree most: ACL (seed correlation
+  0.904, +0.005 OOF) and MCL (0.891). Seed correlations elsewhere are 0.96–0.99, which caps what
+  averaging can add.
+- **Seed 43 alone is as good as seed 42** (−0.0011, CI spans zero). exp018 was not a lucky seed.
+- **The measured noise floor corrects exp021's own motivation.** The 0.013 epoch-3 gap that motivated
+  exp021 was a *mid-training* difference. At the end of training (top-3 averaged), seed 42 vs 43
+  differ by only **0.0020 mean / 0.0046 max** in fold-val, and **0.0046 mean / 0.0067 max** in gold-58.
+  Top-3 weight averaging already damps most run-to-run variance. So the Phase-5 statement "a
+  cross-run fold-0 delta of a few thousandths is noise" still holds, but it is noise of ~0.002–0.007,
+  not ~0.013. This is also why the ensemble's gain is modest.
+
+**Staging.** `scripts/stage_exp021_kaggle.py` wrote the five lean `fold{k}_seed43_best.pt` files,
+292,865,482 B each; SHA-256 verified identical on HPC and locally. They are 3,430 B larger than exp018's
+files, which is fully explained by `torch.save`'s zip entry paths carrying the file stem (`_seed43` = 7 bytes
+x 490 entries). New private dataset `rsna-knee-exp021-weights` created (no exp018 asset touched). Kernel
+`hrdevelops/submit-exp021`: the scored exp018 kernel's metadata (same pinned docker image, `NvidiaTeslaT4`,
+internet off, private) plus the new dataset.
