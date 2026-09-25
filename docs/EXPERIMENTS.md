@@ -2573,3 +2573,15 @@ files, which is fully explained by `torch.save`'s zip entry paths carrying the f
 x 490 entries). New private dataset `rsna-knee-exp021-weights` created (no exp018 asset touched). Kernel
 `hrdevelops/submit-exp021`: the scored exp018 kernel's metadata (same pinned docker image, `NvidiaTeslaT4`,
 internet off, private) plus the new dataset.
+
+**Commit check (instruction 5): PASSED.** `hrdevelops/submit-exp021` version 1, pushed with the CLI, status
+**COMPLETE** after 858 s wall time, of which the notebook itself ran ~124 s. From the downloaded log:
+- the scored code was used: `infer_wmil.py size: 8245 B`;
+- the weights were found by name, seed 42 `fold0-4_best.pt` + seed 43 `fold0-4_seed43_best.pt`, i.e.
+  `checkpoints: 10`, on 2 x T4, loaded in 51 s;
+- **`[exp018] wrote /kaggle/working/submission.csv: 3 rows, 3 predicted, 0 on prior, 0 errors, 1.2 min
+  total`**, then `3 rows, all checks passed.`
+
+The 3 output rows are distinct, in-range and not the label prior. torch 2.10.0+cu128 and timm 1.0.26 on
+Kaggle, matching exp018's scored environment. The one reserved probe is **not** spent; the Submit click is
+the user's.

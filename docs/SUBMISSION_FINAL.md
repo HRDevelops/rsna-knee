@@ -21,6 +21,21 @@ formula (Eff −2.036 vs exp008's −1.945; `scripts/exp018_efficiency_table.py`
 *distinct* selected submissions, or will not count one submission for both tracks, pick the **second
 slot** by the rule in §3; do not change the first.
 
+### 1a. Staged candidate, not yet scored: exp021 10-checkpoint seed ensemble (main track only)
+
+Added 2026-09-25. **Not selected, and not submitted.** One probe is reserved for it.
+
+| | |
+|---|---|
+| Kaggle notebook | `hrdevelops/submit-exp021`, **version 1** (commit run COMPLETE: `3 predicted, 0 on prior, 0 errors`) |
+| Code | the scored `rsna-knee-exp018-code` (`infer_wmil.py` 8,245 B), unchanged |
+| Weights | scored `rsna-knee-exp018-weights` (seed 42, 5 files) + new `rsna-knee-exp021-weights` (seed 43, 5 × 292,865,482 B) |
+| Evidence | OOF 0.8840 vs 0.8816 (+0.0024, 95% CI [+0.0014, +0.0033]); gold-58 0.9111 vs 0.9091 (CI spans 0) |
+| Runtime | ~27 min dual-T4 projected (2× exp018's model cost). **Never the efficiency pick:** it needs LB ≥ 0.9387 just to tie exp018 on Eff |
+
+Rule set by the user: if its public LB does not beat 0.929, modeling is permanently closed. Deploy only
+version 1 of this notebook (the commit-checked one). The exp018 row above is unchanged by any of this.
+
 ## 2. Why the scored exp018 artifact is internally consistent
 
 - **Notebook:** the code cells of `hrdevelops/submit-exp018` (pulled 2026-09-23) are identical to
