@@ -2729,6 +2729,33 @@ kind in the project; every earlier runtime was an H100 projection.
 - **Decision needed (user):** the fold-count sweep was explicitly SKIPPED on the premise "decode-bound, saves
   nothing". The measurement falsifies that premise. Not acted on; raised for decision.
 
+### C — step 3: user decision -> 2-fold exp018 (folds {0,1}, pre-declared) as the efficiency candidate
+
+- **Folds {0, 1} were pre-declared**, not chosen on a score. For the record, gold-58 of the pair: 0.9078 (5-fold
+  0.9091, −0.0012); mean over all 10 pairs 0.9067 (−0.0023), range 0.9025–0.9110.
+- **Decode threads, measured properly** (`hrdevelops/rsna-knee-profile-2fold`, scored driver, 2 folds, each
+  configuration on its OWN disjoint set of 150 training studies, so both start cold):
+
+  | | total | model load | per study excl. load | per 1,300 |
+  |---|---|---|---|---|
+  | 3 threads (scored setting) | 161.1 s | 21 s (weights cold) | **0.934 s** | ~20.5 min |
+  | 4 threads | 146.8 s | 4 s (weights cached) | **0.952 s** | ~20.8 min |
+
+  The raw totals suggested a 4th thread helps (−14 s), but that is entirely model-load time (cold vs cached
+  weights). Per study they are equal; Kaggle's 4 vCPUs also feed two GPU threads. **Kept the scored
+  `cpu_count() − 1` (3)**, which also keeps the notebook one change closer to the scored one. This also closes the
+  decode-speed question: at 2 folds the run sits at the decode floor (~0.93 s/study) and more threads don't lower it.
+- **Notebook** `notebooks/submit-exp018-2fold.ipynb` (`scripts/build_exp018_2fold_notebook.py`) is generated FROM
+  the scored `submit-exp018.ipynb`, replacing exactly one code cell (the weight list becomes
+  `[fold0_best.pt, fold1_best.pt]` with an existence assert) plus the markdown. Scored code and weight datasets,
+  no new dataset.
+- **Commit check PASSED** (`hrdevelops/submit-exp018-2fold` v1): COMPLETE; `weight files: ['fold0_best.pt',
+  'fold1_best.pt']`; `decode workers: 3`; `3 rows, 3 predicted, 0 on prior, 0 errors`; three distinct rows.
+- **Pre-declared selection rule for the efficiency slot (before the probe):** runtimes differ by ~33 min (~53 vs
+  ~20.5), which is 0.060 on the Eff scale, so the 2-fold wins the efficiency formula unless its AUC is more than
+  0.027 lower. **Select the 2-fold as the efficiency pick if its public LB displays >= 0.903**; otherwise keep 5-fold
+  exp018 (56460279).
+
 ### D — slice-spacing audit (zero-GPU; `scripts/audit_slice_spacing.py`, job 27468; `artifacts/slice_spacing_audit.md`)
 
 All 4,407 studies, 20,539 slot-series, 0 read errors. "Effective step" = physical gap between ADJACENT
