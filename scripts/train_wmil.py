@@ -195,7 +195,7 @@ def main() -> None:
 
     model = WindowMIL(m["arch"], pretrained=True, drop=m.get("head_dropout", 0.2),
                       grad_checkpointing=m.get("grad_checkpointing", True),
-                      img_size=m.get("img_size")).to(device)
+                      img_size=m.get("img_size"), backbone_kwargs=m.get("backbone_kwargs")).to(device)
 
     # ---- optional model EMA (exp020). Absent from a config => not constructed, so exp018 is unchanged.
     # decay=0.9999 has a 1/(1-d)=10,000-step horizon, but a fold here is only ~440 steps x 16 epochs =
@@ -285,7 +285,7 @@ def main() -> None:
                     safe_torch_save(
                         {"model": {kk: v.detach().cpu() for kk, v in e["ema"].module.state_dict().items()},
                          "arch": m["arch"], "res": m["res"], "img_size": m.get("img_size"),
-                         "targets": TARGET_COLUMNS, "ema_decay": e["decay"], "epoch": epoch, "val_macro_auc": ema_auc},
+                         "backbone_kwargs": m.get("backbone_kwargs"), "targets": TARGET_COLUMNS, "ema_decay": e["decay"], "epoch": epoch, "val_macro_auc": ema_auc},
                         exp_dir / f"best_ema{e['decay']}.pt", min_gb=5.0)
         hist.append(rec)
         print(f"epoch {epoch}: loss {rec['train_loss']:.4f} | fold-val macro-AUC {val_auc:.4f} | {rec['sec']:.0f}s", flush=True)
@@ -327,7 +327,7 @@ def main() -> None:
 
     if not args.smoke:
         safe_torch_save({"model": model.state_dict(), "arch": m["arch"], "res": m["res"],
-                         "img_size": m.get("img_size"),
+                         "img_size": m.get("img_size"), "backbone_kwargs": m.get("backbone_kwargs"),
                          "targets": TARGET_COLUMNS, "topk_epochs": [e["epoch"] for e in topk],
                          "val_macro_auc": val_macro, "gold58_macro_auc": gold_macro}, exp_dir / "best.pt", min_gb=3.0)
         for e in topk:
@@ -346,7 +346,8 @@ def main() -> None:
             continue
         try:
             ema_model = WindowMIL(m["arch"], pretrained=False, drop=m.get("head_dropout", 0.2),
-                                  grad_checkpointing=False, img_size=m.get("img_size")).to(device)
+                                  grad_checkpointing=False, img_size=m.get("img_size"),
+                                  backbone_kwargs=m.get("backbone_kwargs")).to(device)
             ema_model.load_state_dict(torch.load(ckf, map_location=device)["model"])
             e_val, _ = macro_auc(predict(ema_model, val_loader, m["res"], device, dtype), val_truth)
             e_gold_df = predict(ema_model, gold_loader, m["res"], device, dtype)

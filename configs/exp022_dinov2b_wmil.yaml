@@ -1,0 +1,42 @@
+# exp022 (2026-09-26, Phase 6 workstream B): an ORTHOGONAL backbone in exp018's exact Window-MIL pipeline.
+# DINOv2 ViT-B/14 (self-supervised ViT) replaces CoAtNet-2; everything else is exp018 verbatim: same wmil
+# cache (140mm/336px, 5 slots / 64 slices), same 3-adjacent-slice windows, same per-finding attention-MIL
+# head, labels_v3, same folds, seed 42, same optimiser/schedule/epochs, top-3 epoch averaging. Chosen over
+# ConvNeXt-V2 by the 2026-09-26 public audit: the public lineage's +0.017 LB jump (0.924 -> 0.941) came from
+# adding a DINOv2 arm to the CoAtNet window-MIL arm; no public ConvNeXt arm exists.
+# Three backbone-specific settings, all required (verified before launch):
+#   res 378 / img_size 378 -- patch 14 needs a multiple of 14 (nearest_patch_multiple(384, 14) = 378);
+#   backbone_kwargs.fc_norm false -- WindowMIL pools with global_pool="avg", and a timm ViT then swaps its final
+#     `norm` for a post-pool `fc_norm`, so DINOv2's pretrained norm weights would not load (strict error).
+# Batch-shape check (job 27466, real training shape 8 x 12 = 96 images/forward, bf16, grad ckpt): PASS,
+# largest activation 0.11 x INT_MAX, 0.23 s/step, peak 6.6 GB; eval 0.030 s/study/model (CoAtNet-2: 0.080).
+experiment: exp022_dinov2b_wmil
+seed: 42
+data:
+  cache_dir: ${RSNA_ROOT}/data/cache_wmil
+  manifest_dir: ${RSNA_ROOT}/artifacts/cache_manifests_wmil
+  labels: ${RSNA_ROOT}/artifacts/labels/labels_v3_candidate.parquet
+  folds: ${RSNA_ROOT}/artifacts/folds.parquet
+  final_side: ${RSNA_ROOT}/artifacts/final_side.csv
+model:
+  arch: vit_base_patch14_dinov2.lvd142m
+  res: 378
+  img_size: 378
+  backbone_kwargs:
+    fc_norm: false
+  grad_checkpointing: true
+  head_dropout: 0.2
+train:
+  epochs: 16
+  batch_studies: 8
+  k_train: 12
+  bb_lr: 3.0e-5
+  head_lr: 1.0e-3
+  weight_decay: 0.02
+  pct_start: 0.15
+  grad_clip: 3.0
+  topk: 3
+  precision: bf16
+aug:
+  intensity_jitter: 0.1
+  laterality_swap_prob: 0.0

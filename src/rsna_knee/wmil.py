@@ -275,14 +275,19 @@ class WindowMIL(nn.Module):
 
     def __init__(self, arch: str = "coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k", pretrained: bool = True,
                  n_targets: int = 12, drop: float = 0.2, grad_checkpointing: bool = False,
-                 img_size: int | None = None):
+                 img_size: int | None = None, backbone_kwargs: dict | None = None):
         super().__init__()
         import timm
         # img_size is only forwarded when explicitly set, so the default construction (exp018's
         # coatnet_rmlp_2_rw_384, whose pretrained resolution already IS our 384) is unchanged.
         # A 224-native backbone (e.g. coatnet_3_rw_224) needs it: its relative-position tables are
         # built for the 224 feature map and a 384 forward otherwise fails with a 576-vs-196 mismatch.
+        # backbone_kwargs (also default None => unchanged) passes arch-specific create_model options.
+        # A timm ViT with global_pool="avg" swaps its final `norm` for a post-pool `fc_norm`, so DINOv2's
+        # pretrained `norm.*` weights no longer load (strict load error); {"fc_norm": False} keeps the
+        # pretrained final norm and still average-pools the tokens.
         kw = {} if img_size is None else {"img_size": int(img_size)}
+        kw.update(backbone_kwargs or {})
         self.backbone = timm.create_model(arch, pretrained=pretrained, num_classes=0, in_chans=3,
                                           global_pool="avg", **kw)
         if grad_checkpointing:

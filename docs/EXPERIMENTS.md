@@ -2585,3 +2585,73 @@ internet off, private) plus the new dataset.
 The 3 output rows are distinct, in-range and not the label prior. torch 2.10.0+cu128 and timm 1.0.26 on
 Kaggle, matching exp018's scored environment. The one reserved probe is **not** spent; the Submit click is
 the user's.
+
+**Probe result (2026-09-25): exp021 scored 0.929 public (ref 56556092), a tie.** Under the pre-set rule
+(displayed tie or better => the ensemble), exp021 is the main-track pick and exp018 the efficiency pick
+(`docs/SUBMISSION_FINAL.md` §1).
+
+## 2026-09-26 — PHASE 6: modeling RE-OPENED (narrow scope), HARD FREEZE 2026-10-15
+
+User decision. Four workstreams only: A public-code audit refresh (intelligence), B exp022 orthogonal
+backbone in the same Window-MIL pipeline (main track), C decode speed-up of exp018 (efficiency track,
+prediction-identical), D zero-GPU slice-spacing audit. Explicitly skipped: fold-count sweep, attention
+post-hoc tweaks, cross-label reranker, calibration. Probe budget: at most 2 (exp022 blend; fast exp018).
+
+### exp022 — PRE-REGISTRATION (fixed before any result)
+
+- **Backbone.** DINOv2 ViT-B/14 (`vit_base_patch14_dinov2.lvd142m`) in exp018's exact pipeline
+  (`configs/exp022_dinov2b_wmil.yaml`): the YAML-parsed diff vs exp018 is exactly `arch`, `res` 384->378,
+  `img_size` 378 and `backbone_kwargs.fc_norm: false`. DINOv2 over ConvNeXt-V2 per the audit (A).
+- **Two blockers found and fixed before launch.** (1) `WindowMIL` pools with `global_pool="avg"`, which makes a
+  timm ViT swap its final `norm` for a post-pool `fc_norm`, so DINOv2's pretrained weights fail a strict load;
+  `WindowMIL` gained an optional `backbone_kwargs` (default None => exp018 unchanged) and the config passes
+  `fc_norm: false`. (2) Patch 14 needs a multiple-of-14 input: 378. Pretrained load verified through
+  `WindowMIL` on the login node, online and with `HF_HUB_OFFLINE=1`.
+- **Batch-shape check at the REAL training shape (the exp019 lesson; `scripts/check_train_shape.py`,
+  job 27466, H100):** 8 studies x 12 windows = 96 images/forward, bf16, grad checkpointing, backward + step,
+  and the eval shape 2 x 54 windows:
+
+  | backbone | largest activation | train s/step | train peak | eval s/study (1 model) |
+  |---|---|---|---|---|
+  | CoAtNet-2 (exp018, reference) | **0.95 x INT_MAX** | 0.68 | 22.2 GB | 0.080 |
+  | **DINOv2-B @378 (exp022)** | 0.11 x INT_MAX | **0.23** | 6.6 GB | **0.030** |
+  | ConvNeXt-V2-B @384 | 0.24 x INT_MAX | 0.68 | 15.0 GB | 0.085 |
+
+  The reference row's 0.68 s/step projects to exp018's measured 370 s/epoch, so the check is calibrated.
+  **Found in passing: exp018 itself trains at 95% of the 32-bit indexing limit.** Its recipe cannot take
+  more windows per study or a bigger batch without the exp019 failure; any future CoAtNet change must be
+  checked with this script first.
+- **Gate (all three required, else stop):**
+  1. mean per-label OOF correlation between exp022 and exp018 < 0.90 (the same diversity bar as exp009),
+     with the per-label values reported;
+  2. rank-space blend of exp021's 10 checkpoints (prob-mean, then ranked) with exp022's 5 (ranked) improves
+     OOF macro vs exp021 alone by >= +0.002 at the **pre-declared weight w(exp022) = 0.50**; other weights are
+     shown for information only and do not decide the gate;
+  3. gold-58 of that same w=0.50 blend >= exp021's gold-58 (point estimate).
+  Only then: stage, placeholder commit check, probe.
+- **Runtime expectation (main track only).** exp022's 5 folds add 0.030 x 5 = 0.15 s/study on H100, about
+  42% of exp018's model cost: exp021 + exp022 ~= 0.86 s/study H100 -> ~33 min dual-T4 projected (accepted
+  formula). This needs a driver that loads two architectures and blends in rank space, so a new code dataset
+  and a new commit check; the scored `infer_wmil.py` prob-means one list at one resolution.
+
+**Launch.** Job 27469, array 0-4, `slurm/train_exp022.sbatch` (2 h limit, `--max-hours 1.7`, 15 GB projected).
+
+### A — public-code audit refresh (intelligence only; full report `artifacts/public_benchmark_audit_0926.md`)
+
+- **No new family.** The top-10 by score are all re-runs or forks of the "Speedy Raptors" lineage, sharing 14
+  public datasets. Efficiency board: >= 0.94 went 730 -> 934 entries, max 0.958. We are efficiency rank 182
+  (0.929); entries at 0.928-0.930 span ranks 54-3,059, so runtime separates hundreds of places at our AUC.
+- **Q1 (blended families):** DINOv2-S slot attention (20 members), A5 attention pooling, RadImageNet ResNet-50,
+  and a CoAtNet-2 window-MIL arm on the SAME backbone as exp018 at 0.60-1.00 of the final blend per finding.
+  Lineage table (claims): CoAtNet alone 0.924 -> **+DINOv2 arm 0.941 (+0.017)** -> CoAtNet variants 0.942 ->
+  0.943. DINOv2 is the complementary arm; no ConvNeXt arm exists. => exp022 uses DINOv2-B.
+- **Q2 (speed):** no public notebook is sub-10-min (the fastest claims < 30 min for the full stack; the leaders'
+  code is private). Output-preserving tricks: header reads with `specific_tags`, one-time cached ordering, and
+  BLAS/OpenMP/cv2 threads pinned to 1 inside a worker pool. `cv2.resize` is also used but changes pixels, so it
+  is excluded by C's float-tolerance requirement.
+- **Q3 (structurally new):** most notable, **denser inference-time window sampling with unchanged models**
+  (`raptor_k_eval` 62 -> 94, "the accuracy change that needed no new model"). Also: multi-view preprocessing
+  TTA incl. reversed slice order, two new CoAtNet heads on 96-slice stacks, rank-of-mean-probability family
+  reduction, inference-only depth TTA. The window-density idea is testable on OOF with the existing
+  exp018/exp021 checkpoints (a denser re-cache, no retraining) but is outside the four Phase-6 workstreams,
+  so it is reported, not acted on.

@@ -1,6 +1,6 @@
 # Final Submission State: RSNA Knee Abnormality Detection
 
-Frozen 2026-09-23. Verified with the Kaggle CLI on the same day (`kaggle competitions submissions`,
+Frozen 2026-09-23; selections updated 2026-09-26 (exp021 main, exp018 efficiency). Verified with the Kaggle CLI on the same day (`kaggle competitions submissions`,
 `kaggle datasets files`/`download`, `kaggle kernels pull`). History and reasoning are in
 `docs/EXPERIMENTS.md`; this page covers what is selected and what to do if something has to change.
 
@@ -8,22 +8,29 @@ Frozen 2026-09-23. Verified with the Kaggle CLI on the same day (`kaggle competi
 
 | Role | Submission ref | Public LB | Notebook (Kaggle) | Datasets |
 |---|---|---|---|---|
-| **Main leaderboard** | **56460279** (2026-09-22 09:22 UTC) | **0.929** | `hrdevelops/submit-exp018` | `rsna-knee-exp018-code`, `rsna-knee-exp018-weights`, competition data |
-| **Efficiency track** | same: **56460279** | 0.929 | same | same |
+| **Main leaderboard** | **56556092** (2026-09-25 17:07 UTC) — exp021 10-checkpoint seed ensemble | **0.929** | `hrdevelops/submit-exp021` v1 | `rsna-knee-exp018-code`, `rsna-knee-exp018-weights`, `rsna-knee-exp021-weights`, competition data |
+| **Efficiency track** | **56460279** (2026-09-22 09:22 UTC) — exp018 5-fold | **0.929** | `hrdevelops/submit-exp018` | `rsna-knee-exp018-code`, `rsna-knee-exp018-weights`, competition data |
+
+**Selection rule applied (2026-09-26).** exp021 displayed 0.929, a tie at 3-decimal display precision (exp018's
+own true score is anywhere in [0.9285, 0.9295)). The rule was fixed BEFORE the probe: a displayed tie or better
+selects the 10-checkpoint ensemble for the main track, because its OOF gain is real (+0.0024, 95% CI
+[+0.0014, +0.0033]) and the private leaderboard is what counts. exp018 keeps the efficiency slot: it needs
+half the runtime (15.3 vs ~27 min projected), so it wins the efficiency formula at equal AUC. The two picks
+are now distinct submissions, which removes the earlier open question of whether one submission can count
+for both tracks.
 | Fallback: ensemble | 56273364 (`ensamble_notebook` v3) | 0.893 | `hrdevelops/ensamble-notebook` | `rsna-knee-code`, `rsna-knee-exp006/003/005-weights` |
 | Fallback: efficiency | 56297755 (`rsna-knee-submit-efficiency` v2) | 0.885 | `hrdevelops/rsna-knee-submit-efficiency` | `rsna-knee-code`, `rsna-knee-exp008-weights` |
 
 All four are `COMPLETE` with a score. The CLI cannot show or set final selections, so **make the
 selections in the Kaggle UI** (My Submissions → select).
 
-exp018 serves both tracks because it is the best-scoring model and also minimizes the efficiency
-formula (Eff −2.036 vs exp008's −1.945; `scripts/exp018_efficiency_table.py`). If Kaggle requires two
-*distinct* selected submissions, or will not count one submission for both tracks, pick the **second
-slot** by the rule in §3; do not change the first.
+(Superseded 2026-09-26: exp018 no longer serves both tracks; see the selection rule above.) exp018 remains
+the efficiency pick because it minimizes the efficiency formula (Eff −2.036 vs exp008's −1.945;
+`scripts/exp018_efficiency_table.py`).
 
-### 1a. Staged candidate, not yet scored: exp021 10-checkpoint seed ensemble (main track only)
+### 1a. exp021 10-checkpoint seed ensemble: SCORED 0.929 (56556092), now the main-track pick
 
-Added 2026-09-25. **Not selected, and not submitted.** One probe is reserved for it.
+Added 2026-09-25 as a staged candidate; submitted 2026-09-25 and selected 2026-09-26 under the pre-set tie rule.
 
 | | |
 |---|---|
