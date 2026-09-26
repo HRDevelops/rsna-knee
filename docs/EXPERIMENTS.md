@@ -2835,6 +2835,28 @@ tag/geometry side -> scored `predict_study`, fp16); all 4,407 studies, 0 decode 
   lineage's reported gain likely came with their other changes (96-slice-native heads, view TTA) rather than
   density alone. Not deployed.
 
+## 2026-09-26 — Efficiency item 5: inference dtype and channels_last (measured; NOT adopted)
+
+- **Dtype, from the scored code:** `infer_wmil.py` sets `dtype = torch.float16 if devices[0] != "cpu" else
+  torch.bfloat16`. All Kaggle devices are `cuda:*`, so exp018 runs **fp16 autocast on T4, never bf16**
+  (`wmil.predict_study` wraps each window chunk in `torch.autocast(device_type="cuda", dtype=float16)`; a fold
+  with non-finite output is recomputed in fp32). bf16 only ever applies on CPU.
+- **channels_last, measured on Kaggle's T4** (`hrdevelops/rsna-knee-profile-channels-last`,
+  `scripts/build_kaggle_channels_last_notebook.py`): 200 training studies (disjoint from earlier runs), decoded
+  once, all 5 folds on ONE T4, three timed passes:
+
+  | variant | s/study (5 folds) | vs scored | max \|Δprob\| vs scored | mean \|Δprob\| | min per-label Spearman |
+  |---|---|---|---|---|---|
+  | A: scored `predict_study` | 4.514 | — | — | — | — |
+  | B: channels_last (weights + window batches) | 4.347 | −3.7% | 2.9e-4 | 1.6e-5 | 0.999997 |
+  | C: B + `cudnn.benchmark` | 4.309 | −4.5% | 2.9e-4 | 1.6e-5 | 0.999997 |
+
+  A reproduces the earlier model-time measurement (4.514 vs 4.479 s/study), which confirms the ~53 min 5-fold figure.
+- **Verdict: not adopted.** Predictions match within float tolerance, but the speed-up is 1.04–1.05x. The adoption
+  bar was "runtime drops meaningfully". The efficiency pick (2 folds) is decode-bound (0.934 s/study vs 0.896 s of
+  model time), so a faster model does not shorten it. The only way a model speed-up pays is by fitting more folds
+  into the same ~20.5 min, and 5 folds would need ~2.4x. Nothing was built.
+
 ## 2026-09-26 — Stale efficiency numbers corrected (one pass)
 
 The −2.0362 efficiency figure, "5 folds is efficiency-optimal" and the ~15–17 min runtime all came from the
