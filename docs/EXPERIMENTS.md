@@ -2902,3 +2902,61 @@ spacing, so there is no spacing fix to make (the rule was "act only if a quartil
 worse, but not BECAUSE of spacing). Side note for A's denser-window idea: across studies, finer effective steps
 show no dose-response, which weakly lowers the expected gain. Densifying WITHIN a study is a different
 experiment and this audit does not rule it out.
+
+## 2026-09-26 — Offline blend gate, exp021 + slot ensemble — PRE-REGISTRATION (written before any number is computed)
+
+**Rulings (user, 2026-09-26).** (1) Offline blend analysis approved, zero GPU. (4) Training freeze confirmed: no
+RadImageNet, no new training. This revisits the 2026-09-22 blend analysis (exp018 + slot ensemble: +0.0036–0.0040
+OOF, plateau at CoAt weight 0.6–0.8, gold-58 flat). The deployment hung; the model side never failed.
+
+**Arms (architecture-level, one vote each).**
+- **CoAt arm = exp021**, the 10-checkpoint mean. OOF: a study in fold k gets the mean of fold-k seed 42 (exp018)
+  and fold-k seed 43. Gold-58: the mean of all 10 checkpoints.
+- **Slot arm = the scored 3-member ensemble {exp006, exp003, exp005}, exactly as the 0.893 notebook computes it**
+  (`src/rsna_knee/ensemble_recipe_v1.yaml`, `infer_core.ensemble_blend`): per label, prob-mean or rank-mean of
+  the three members as the recipe says. Rank-mean labels use each member's `empirical_percentile` (searchsorted
+  against that member's sorted OOF). Offline, the OOF population is the reference; gold-58 members are the
+  5-fold prob-mean looked up against the members' OOF.
+
+**Blend.** Per label, each arm's score becomes a percentile: `searchsorted(sorted OOF population of that arm, x) / N`
+(the same lookup used at test time; on OOF it is the within-population rank). Blend = (1 − α)·pct_coat + α·pct_slot,
+one global α for all 12 labels, grid α ∈ {0, 0.1, 0.2, 0.3, 0.4}.
+
+**Population / truth.** Non-gold studies with OOF from all five runs, a `labels_v2_final` label and a report
+cluster (expected 4,349). Truth = `labels_v2_final` binarised at 0.5; gold-58 truth = train.csv labels.
+
+**Nested CV.**
+- Outer: sklearn `GroupKFold(n_splits=5)` over the OOF population, groups = `report_cluster_id`.
+- Inner, for each outer fold k: using only the other four folds, gain(α) = macro-AUC(blend α) − macro-AUC(α = 0).
+- **α rule:** α_k = the smallest α whose inner gain is within 0.0005 of the best inner gain. OOF under-rates the
+  CoAt family by ~0.03 against LB, so an OOF argmax over-weights the slot arm.
+- **Cross-fitted score:** outer-fold studies are scored with α_k. Pooled macro-AUC over all 4,349 studies, minus
+  exp021 alone (0.8840).
+- **Deploy α** (used by B and by criterion 4) = the same rule applied to all 4,349 OOF studies.
+
+**Gate (all five required):**
+
+| # | Criterion | Bar |
+|---|---|---|
+| 1 | Mean per-label Spearman correlation, exp021 vs slot arm (OOF) | < 0.92 |
+| 2 | Cross-fitted macro-AUC gain over exp021 | ≥ +0.0020 |
+| 3 | 1,000 paired cluster-bootstrap reps over report clusters (seed 0, cross-fitted scores held fixed) | 95% CI lower bound > 0 and ≥ 95% of reps > 0 |
+| 4 | Gold-58 macro-AUC at the deploy α | ≥ 0.9091 (exp021's 0.9111 − 0.002) |
+| 5 | IQR of the five outer-fold α_k | ≤ 0.20 |
+
+The full α curve (OOF gain with CI, gold-58 at each α) and each outer fold's α_k are reported as information only.
+**Fail = stop, no rescue.**
+
+**If it passes (B):** build `submit-blend-v5`. The parent notebook is CPU-only and never imports torch. It runs two
+children with `subprocess.run(timeout=...)`:
+- child 1: exp021's scored logic and datasets, unchanged;
+- child 2: the scored ensemble notebook's logic with `rsna-knee-code` pinned to the 2026-09-16 version.
+
+Each child's CSV is validated (row count, no NaN, no prior rows). A child that hangs after writing a valid CSV is
+killed and its CSV used. The blend uses per-label test-batch ranks at the fixed deploy α.
+- Fallbacks: slot child fails → exp021 output unchanged; CoAt child fails → slot output.
+- Runtime is measured on the placeholder and projected to the full test (must be < 7 h).
+- Placeholder commit check: Complete, 0 on prior, clean exit. Then stage for the user's submit click.
+
+**Selection rule (C, recorded now):** swap the main-track pick to the blend only if its public LB ≥ 0.930. The
+efficiency pick stays exp018 2-fold regardless. After this probe, modeling is closed for good.
