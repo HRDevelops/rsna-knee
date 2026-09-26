@@ -1,47 +1,51 @@
 # Final Submission State: RSNA Knee Abnormality Detection
 
-Frozen 2026-09-23; selections updated 2026-09-26 (exp021 main, exp018 efficiency). Verified with the Kaggle CLI on the same day (`kaggle competitions submissions`,
+Frozen 2026-09-23; selections updated 2026-09-26 (main = exp021, efficiency = exp018 2-fold). Verified with the Kaggle CLI on the same day (`kaggle competitions submissions`,
 `kaggle datasets files`/`download`, `kaggle kernels pull`). History and reasoning are in
 `docs/EXPERIMENTS.md`; this page covers what is selected and what to do if something has to change.
 
 ## 1. Selections
 
-| Role | Submission ref | Public LB | Notebook (Kaggle) | Datasets |
-|---|---|---|---|---|
-| **Main leaderboard** | **56556092** (2026-09-25 17:07 UTC) — exp021 10-checkpoint seed ensemble | **0.929** | `hrdevelops/submit-exp021` v1 | `rsna-knee-exp018-code`, `rsna-knee-exp018-weights`, `rsna-knee-exp021-weights`, competition data |
-| **Efficiency track** | **56460279** (2026-09-22 09:22 UTC) — exp018 5-fold | **0.929** | `hrdevelops/submit-exp018` | `rsna-knee-exp018-code`, `rsna-knee-exp018-weights`, competition data |
+| Role | Submission ref | Public LB | Notebook (Kaggle) | Datasets | Runtime, 2 × T4 (measured) |
+|---|---|---|---|---|---|
+| **Main leaderboard** | **56556092** (2026-09-25 17:07 UTC): exp021, 10-checkpoint seed ensemble | **0.929** | `hrdevelops/submit-exp021` v1 | `rsna-knee-exp018-code`, `rsna-knee-exp018-weights`, `rsna-knee-exp021-weights`, competition data | ~100 min (10 × ~9.7 min/fold) |
+| **Efficiency track** | **56560771** (2026-09-25 21:48 UTC): exp018, 2 folds {0, 1} | **0.925** | `hrdevelops/submit-exp018-2fold` v1 | `rsna-knee-exp018-code`, `rsna-knee-exp018-weights`, competition data | **~20.5 min** |
+| Fallback: exp018 5-fold | 56460279 (2026-09-22 09:22 UTC) | 0.929 | `hrdevelops/submit-exp018` | `rsna-knee-exp018-code`, `rsna-knee-exp018-weights` | ~53 min |
+| Fallback: ensemble | 56273364 (`ensamble_notebook` v3) | 0.893 | `hrdevelops/ensamble-notebook` | `rsna-knee-code`, `rsna-knee-exp006/003/005-weights` | — |
+| Fallback: efficiency | 56297755 (`rsna-knee-submit-efficiency` v2) | 0.885 | `hrdevelops/rsna-knee-submit-efficiency` | `rsna-knee-code`, `rsna-knee-exp008-weights` | — |
 
-**Selection rule applied (2026-09-26).** exp021 displayed 0.929, a tie at 3-decimal display precision (exp018's
-own true score is anywhere in [0.9285, 0.9295)). The rule was fixed BEFORE the probe: a displayed tie or better
-selects the 10-checkpoint ensemble for the main track, because its OOF gain is real (+0.0024, 95% CI
-[+0.0014, +0.0033]) and the private leaderboard is what counts. exp018 keeps the efficiency slot: it needs
-half the runtime (15.3 vs ~27 min projected), so it wins the efficiency formula at equal AUC. The two picks
-are now distinct submissions, which removes the earlier open question of whether one submission can count
-for both tracks.
-| Fallback: ensemble | 56273364 (`ensamble_notebook` v3) | 0.893 | `hrdevelops/ensamble-notebook` | `rsna-knee-code`, `rsna-knee-exp006/003/005-weights` |
-| Fallback: efficiency | 56297755 (`rsna-knee-submit-efficiency` v2) | 0.885 | `hrdevelops/rsna-knee-submit-efficiency` | `rsna-knee-code`, `rsna-knee-exp008-weights` |
+All are `COMPLETE` with a score. The CLI cannot show or set final selections, so **make the selections in the
+Kaggle UI** (My Submissions → select).
 
-All four are `COMPLETE` with a score. The CLI cannot show or set final selections, so **make the
-selections in the Kaggle UI** (My Submissions → select).
+**How the two picks were made (both rules fixed BEFORE the probe they decided):**
+- **Main = exp021.** It displayed 0.929, a tie with exp018 at 3-decimal precision (exp018's true score is
+  anywhere in [0.9285, 0.9295)). Rule: a displayed tie or better selects the 10-checkpoint ensemble, because
+  its OOF gain is real (+0.0024, 95% CI [+0.0014, +0.0033]) and the private leaderboard is what counts.
+- **Efficiency = exp018 2-fold.** Rule: select it if its public LB displays >= 0.903. It scored **0.925**. On
+  Kaggle's own 2 × T4 the 5-fold exp018 run is model-bound at **~53 min** (not the 15.3 min once projected);
+  2 folds run in **~20.5 min** (measured, `hrdevelops/rsna-knee-profile-2fold`). Efficiency score
+  (maxAUC 0.95 assumed, public AUC): 2-fold **−2.018** vs 5-fold **−1.966**.
 
-(Superseded 2026-09-26: exp018 no longer serves both tracks; see the selection rule above.) exp018 remains
-the efficiency pick because it minimizes the efficiency formula (Eff −2.036 vs exp008's −1.945;
-`scripts/exp018_efficiency_table.py`).
-
-### 1a. exp021 10-checkpoint seed ensemble: SCORED 0.929 (56556092), now the main-track pick
-
-Added 2026-09-25 as a staged candidate; submitted 2026-09-25 and selected 2026-09-26 under the pre-set tie rule.
+### 1a. exp021 10-checkpoint seed ensemble (main-track pick)
 
 | | |
 |---|---|
 | Kaggle notebook | `hrdevelops/submit-exp021`, **version 1** (commit run COMPLETE: `3 predicted, 0 on prior, 0 errors`) |
 | Code | the scored `rsna-knee-exp018-code` (`infer_wmil.py` 8,245 B), unchanged |
-| Weights | scored `rsna-knee-exp018-weights` (seed 42, 5 files) + new `rsna-knee-exp021-weights` (seed 43, 5 × 292,865,482 B) |
+| Weights | scored `rsna-knee-exp018-weights` (seed 42, 5 files) + `rsna-knee-exp021-weights` (seed 43, 5 × 292,865,482 B) |
 | Evidence | OOF 0.8840 vs 0.8816 (+0.0024, 95% CI [+0.0014, +0.0033]); gold-58 0.9111 vs 0.9091 (CI spans 0) |
-| Runtime | ~27 min dual-T4 projected (2× exp018's model cost). **Never the efficiency pick:** it needs LB ≥ 0.9387 just to tie exp018 on Eff |
+| Runtime | ~100 min on 2 × T4 (the measured ~9.7 min per checkpoint × 10); far inside the 9 h cap |
 
-Rule set by the user: if its public LB does not beat 0.929, modeling is permanently closed. Deploy only
-version 1 of this notebook (the commit-checked one). The exp018 row above is unchanged by any of this.
+### 1b. exp018 2-fold (efficiency pick)
+
+| | |
+|---|---|
+| Kaggle notebook | `hrdevelops/submit-exp018-2fold`, **version 1** (commit run COMPLETE: `weight files: ['fold0_best.pt', 'fold1_best.pt']`, `3 predicted, 0 on prior, 0 errors`) |
+| Built from | the scored `submit-exp018.ipynb` with ONE code cell changed (`scripts/build_exp018_2fold_notebook.py`) |
+| Code / weights | the scored datasets, unchanged; decode threads unchanged (`cpu_count() − 1`; a 4th thread measured no faster) |
+| Folds | {0, 1}, **pre-declared** (not chosen on a score); gold-58 0.9078 (5-fold 0.9091; mean of all 10 pairs 0.9067) |
+
+Deploy only version 1 of each notebook (the commit-checked ones).
 
 ## 2. Why the scored exp018 artifact is internally consistent
 
@@ -71,9 +75,10 @@ version 1 of this notebook (the commit-checked one). The exp018 row above is unc
 4. Save Version → **Save & Run All (commit)**. Healthy log on the 3-row placeholder:
    `[exp018] wrote /kaggle/working/submission.csv: 3 rows, 3 predicted, 0 on prior, 0 errors`, then
    `Wrote ...: 3 rows, all checks passed.` The run status must be **Complete**, not Error. About 1–2 min.
-5. Submit that version from the notebook's Output / "Submit to competition". Projected scoring runtime
-   on ~1,300 studies: ~17 min on T4 x2, ~33 min on T4 x1 (`EXPERIMENTS.md` 2026-09-22 timing check;
-   a worst-case decode-worker assumption gave ~83 min). All are far inside the 9h cap.
+5. Submit that version from the notebook's Output / "Submit to competition". Scoring runtime on ~1,300
+   studies, MEASURED on Kaggle's 2 × T4 (2026-09-26): ~53 min for 5 folds, ~20.5 min for the 2-fold
+   efficiency notebook, ~100 min for exp021's 10 checkpoints. All are far inside the 9h cap. (The ~17 min
+   once quoted here was an H100 projection with a T4 factor that turned out ~3.6× too optimistic.)
 6. If `on prior` is above 0 on the placeholder, or the status is Error: **do not submit**. Keep the
    existing 56460279 selected.
 

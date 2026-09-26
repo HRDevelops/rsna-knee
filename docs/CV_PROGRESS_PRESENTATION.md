@@ -4,8 +4,9 @@ Project: RSNA Knee Abnormality Detection (Kaggle 2026): 12 findings from knee MR
 Every number below is a logged measurement from `docs/EXPERIMENTS.md`. Rewritten 2026-09-24 for the full
 four-phase arc. Timing budget: 5 slides × ~55 s ≈ 4:35, leaving ~25 s of slack.
 
-Status when presenting: modeling and code frozen. **exp018 (public LB 0.929) is the final submission for
-both the accuracy and the efficiency track.** The final private-leaderboard rank is not yet known (the
+Status when presenting: modeling and code frozen (freeze Oct 15). **One model family (exp018's CoAtNet-2
+Window-MIL) supplies both final picks:** accuracy = exp021, 10 checkpoints (public 0.929); efficiency = exp018 on
+2 folds (public 0.925, ~20 min measured). The final private-leaderboard rank is not yet known (the
 competition closes Oct 22).
 
 ## Outline (what the five minutes say)
@@ -15,8 +16,8 @@ competition closes Oct 22).
 3. **Phase 2: the DINOv2 slot model and its ceiling** (1:50–2:50): 0.893, then six null ablations.
 4. **Phases 3–4: audit → exp018** (2:50–3:50): what the audit found, and the window-MIL model that
    broke the ceiling.
-5. **Results + lessons** (3:50–4:35): the final table, one submission for both tracks, and what was
-   wrong in my own earlier conclusion.
+5. **Results + lessons** (3:50–4:35): the final table, one model family for both tracks, and two of my
+   own conclusions that measurement overturned.
 
 ## Slide 1 — The problem: strong images, weak labels
 
@@ -99,19 +100,24 @@ things at once, so I can't tell you which one mattered: that's the honest caveat
 |---|---|---|---|---|
 | DINOv2 3-model ensemble | 0.8744 | 0.8953 | 0.893 | ~62 min (projected) |
 | DINOv2 distilled (old efficiency pick) | 0.8708 | 0.888 | 0.885 | minutes |
-| **exp018 CoAtNet-2 Window-MIL (final, both tracks)** | **0.8816** | **0.9091** | **0.929** | **~15–17 min (projected)** |
+| **exp021: CoAtNet-2 Window-MIL, 2 seeds × 5 folds (final, accuracy)** | **0.8840** | **0.9111** | **0.929** | ~100 min |
+| **exp018 on 2 folds (final, efficiency)** | — | 0.9078 | **0.925** | **~20 min (measured)** |
+| exp018, 5 folds | 0.8816 | 0.9091 | 0.929 | ~53 min (measured) |
 | Leaderboard top, for scale | — | — | ~0.95–0.96 | — |
 
-- **+0.036 LB** from one model family. It is also **efficiency-optimal** (score −2.036 vs −1.945),
-  because at 2 GPUs image decoding, not the model, bounds the runtime.
+- **+0.036 LB** from one model family.
+- **Efficiency needed a real measurement.** I had projected 15 min from H100 timing; on Kaggle's own T4s the
+  5-fold run takes ~53 min and is model-bound. Cutting to 2 folds brings it to ~20 min for 0.004 AUC, which
+  wins the efficiency formula (−2.018 vs −1.966).
 - The LB beat OOF every time, because OOF is scored against noisy report labels.
 - Lessons:
   - A run of null ablations tells you *that* family is saturated, not what the ceiling is.
   - Survey outside your own pipeline before concluding "label ceiling".
+  - Measure runtime on the target hardware; a borrowed speed factor was off by 3.6×.
 
-**Say (≈45 s):** "One model now does both jobs: it's the most accurate and the cheapest to run. The
-lesson I'd pass on is that six null results proved my model family was saturated, not that the
-problem was. Next is open-sourcing code, weights and the write-up."
+**Say (≈45 s):** "One model family does both jobs: ten checkpoints for accuracy, two for speed. Two lessons:
+six null results proved my model family was saturated, not that the problem was; and a runtime I had projected
+at 15 minutes measured 53 on the real hardware. Next is open-sourcing code, weights and the write-up."
 
 ## Likely questions (prep)
 
@@ -130,6 +136,6 @@ problem was. Next is open-sourcing code, weights and the write-up."
 
 ## Items to verify before Oct 15
 
-- Runtimes for the ensemble (~62 min) and exp018 (~15–17 min) are projections from H100 profiling,
-  not read from a full hidden-test Kaggle log. Say "projected".
+- exp018/exp021 runtimes are MEASURED on Kaggle's 2 × T4 machine on 150 training studies and extrapolated to
+  ~1,300; the old DINOv2 ensemble's ~62 min is still an H100 projection. Say "projected" for that one.
 - The final selection state and any private-LB result, if published before Oct 15.

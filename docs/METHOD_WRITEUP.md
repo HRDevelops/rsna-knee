@@ -27,8 +27,10 @@ reference formulation — scored 0.929 public LB solo**, a +0.036 gain over the 
 is now the strongest scored model in the project. Its own efficiency-track re-evaluation finds it
 beats the deployed distilled student on the formula too.
 
-**Final solution (2026-09-23): exp018 alone, 5 folds on dual T4, is the submission for BOTH the main
-leaderboard and the efficiency track** — the same scored 0.929 notebook, no ensemble. A rank-space
+**Final solution (2026-09-26): one model family, exp018's CoAtNet-2 Window-MIL, for both tracks.**
+Main track: **exp021**, exp018's recipe trained with two seeds (10 checkpoints, public 0.929; OOF +0.0024 over
+one seed). Efficiency track: **exp018 on 2 folds** (public 0.925), which Kaggle's own T4s run in ~20.5 min vs
+~53 min for 5 folds (§5a). A rank-space
 blend of exp018 with the original ensemble (probe #4) was built and rehearsed but hung on Kaggle twice
 after finishing its work and **never scored**; it was abandoned (§5a, §9, §11). The original DINOv2
 pipeline (§5–§8) is kept fully documented as the path that produced the label engine, the teacher
@@ -234,16 +236,24 @@ study) wrote a valid `submission.csv` in ~6 minutes on Kaggle's placeholder test
 teardown for 9h (v2) and again for 10h (v3) until Kaggle killed it — see §9 for what was found and
 fixed, and what was not. It is not part of the final selection.
 
-**Efficiency-track re-evaluation.** exp018's gold-58 macro drops only 0.0067 going from 5 folds to 1
-(all-subsets averaging, `scripts/fold_subset_gold_auc.py`) — window-MIL already averages ~50 windows
-per fold, so one fold is a fairly stable estimate on its own — while runtime is dominated by DICOM
-decode rather than the model at 2 GPUs. Recomputing `Eff = AUC/(0.5−maxAUC) + s/32400` (maxAUC 0.95)
-across fold counts (`scripts/exp018_efficiency_table.py`) finds the **full 5-fold, dual-T4
-configuration efficiency-optimal** — i.e. the same notebook already staged for probe #3, not a
-reduced variant — because at 2 GPUs decode is the bottleneck for any fold count up to 5, so extra
-folds cost almost nothing in wall-clock while still buying AUC. This beats the deployed exp008
-efficiency model on the formula (Eff −2.036 vs. −1.945, AUC anchored on the two real LB scores).
-**exp018 5-fold is therefore also the final efficiency-track selection**; exp008 (§8) is superseded.
+**Efficiency track: fold count, decided by measurement.** exp018's gold-58 macro drops only 0.0067 going
+from 5 folds to 1 (all-subsets averaging, `scripts/fold_subset_gold_auc.py`): window-MIL already averages
+~50 windows per fold, so one fold is a fairly stable estimate. The first efficiency table (2026-09-22)
+concluded that 5 folds was efficiency-optimal (Eff −2.036), because it projected the run as decode-bound at
+15.3 min. That projection scaled H100 timing by a 3.5× T4 factor carried over from the DINOv2 notebooks.
+**Measured on Kaggle's own 2 × T4 machine (2026-09-26), it was wrong:** CoAtNet-2 on a T4 is ~12.6× slower
+than on an H100, 5 folds take **~53 min** per 1,300 studies (model-bound, ~9.7 min per fold), and the real
+5-fold Eff is −1.966. Fold count is therefore the efficiency lever. **2 folds (pre-declared {0, 1}) run in
+~20.5 min**, at the DICOM-decode floor; a 4th decode thread was measured to give no further gain. They scored
+**0.925 public, Eff −2.018**, and are the final efficiency selection (exp008, §8, is superseded).
+
+**Seeds and density (main track).** A second seed of the identical recipe (exp021, seed 43) matches seed 42
+(−0.0011 OOF, CI spans 0); end-of-training seed-to-seed spread is 0.0020 fold-val. The 10-checkpoint mean adds
++0.0024 OOF [+0.0014, +0.0033] and is the main-track selection (0.929 public, a tie at display precision;
+selected by a rule fixed before the probe). Evaluating the same checkpoints on a denser cache (102 slices,
+~87 windows instead of 64 / ~51; the public lineage's "more windows, same model") is null: OOF −0.0001
+[−0.0013, +0.0010]. A DINOv2-B backbone in this same pipeline (exp022) is weaker (OOF 0.8709) and ranks
+studies almost identically (mean per-label correlation 0.944), and every blend weight lowers OOF (§10).
 
 ## 6. Training stability
 
@@ -297,8 +307,8 @@ naive horizontal flip doesn't actually cancel.
 
 ## 8. Efficiency-track model
 
-*Superseded for the final selection by exp018 (§5a), which scores higher AND is efficiency-optimal on
-the formula; exp008 is documented here as the scored (0.885) distilled model it was.*
+*Superseded for the final selection by exp018 on 2 folds (§5a: public 0.925, ~20.5 min measured on Kaggle's
+T4s, Eff −2.018 vs exp008's −1.945); exp008 is documented here as the scored (0.885) distilled model it was.*
 
 **exp008**: DINOv2 ViT-S/14 (same backbone family as the smallest ensemble member), T=16 (down
 from 24), 320px (down from 384), distilled from the accepted 3-member ensemble's soft predictions
@@ -461,6 +471,21 @@ best solo) moved OOF beyond noise; every lever tried after that recipe landed is
 - **External data** (MRNet, KneeMRI): not used — licence terms did not clearly permit prize use plus
   redistribution of derived weights.
 
+After exp018 (Window-MIL CoAtNet-2) became the model family, every further lever was tested against it:
+- **CoAtNet-3 (exp019): abandoned, untrainable at this batch shape.** No pretrained `coatnet_rmlp_3` exists; the
+  substitute `coatnet_3_rw_224` overflows 32-bit CUDA indexing at 96 windows/forward, and every fix changes
+  BatchNorm statistics. exp018's own CoAtNet-2 already trains at 0.95 × that limit.
+- **Model EMA (exp020): null.** EMA ties the top-3 epoch weight averaging already in the recipe (fold-val 0.9532 vs
+  0.9533).
+- **DINOv2-B in the same Window-MIL pipeline (exp022): null, and blending hurts.** Solo OOF 0.8709 vs 0.8816; mean
+  per-label correlation with exp018 0.944; the pre-registered 0.50 rank blend with exp021 lowers OOF by 0.0032
+  [−0.0045, −0.0019], and the OOF curve falls monotonically as the DINOv2 weight rises. The public lineage's DINOv2
+  gain comes from a DINOv2 arm in a *different* pipeline; inside the same pipeline a second backbone adds nothing.
+- **Dense-window inference: null.** The same exp018 checkpoints on 102 slices (~87 windows) instead of 64 (~51):
+  OOF −0.0001 [−0.0013, +0.0010].
+- **Slice-spacing audit: no action.** Two quartiles score lower, but one has the same spacing as the rest and the
+  other is short-coverage axial series; neither deficit is caused by spacing.
+
 ## 11. Final leaderboard result
 
 **Both probes submitted and scored (2026-09-16/17).** Public leaderboard top at time of writing:
@@ -523,12 +548,17 @@ already carried the thread-shutdown fix proven on HPC. A last-chance v4 ending i
 submitted. Per the pre-agreed guardrail, the blend was then dropped. Neither hang has an established
 cause (§9).
 
-**Final selections: exp018 (probe #3, 0.929) for both the main leaderboard and the efficiency
-track.** It is the highest-scoring submission and also the efficiency-optimal one on the formula
-(§5a), so a separate fast model would give up AUC and gain nothing. This departs from the original
-plan in CLAUDE.md §4 (one ensemble pick plus one distilled pick): that plan assumed the fast model
-would be a smaller copy of the best one, and here the best one is already the fast one. The scored
-notebook versions are unchanged. The frozen notebooks' code dataset received the fixed
+**Probes #5 and #6 (2026-09-25).** exp021, the 10-checkpoint seed ensemble: **0.929** (56556092).
+exp018 on 2 folds: **0.925** (56560771).
+
+**Final selections (2026-09-26):**
+- **Main leaderboard: exp021** (0.929). It displays a tie with exp018 5-fold at 3-decimal precision, but its OOF
+  gain is real, and the tie rule was fixed before the probe.
+- **Efficiency track: exp018 2-fold** (0.925, ~20.5 min measured on Kaggle's 2 × T4, Eff −2.018).
+
+This matches the original plan in CLAUDE.md §4 in shape (an accuracy pick and a fast pick), though both
+picks come from one model family rather than an ensemble plus a distilled student. The scored notebook
+versions are unchanged. The frozen notebooks' code dataset received the fixed
 `prefetch_decode` as insurance. A hard-exit final cell was considered for them too, and rejected once
 v4 showed that Kaggle treats it as a failed run. The ensemble
 (0.893) and exp008 (0.885) remain scored and selectable as fallbacks. Final private-leaderboard

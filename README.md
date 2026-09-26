@@ -14,19 +14,24 @@ disagree systematically with the expert labels (~18%). This repository contains:
 
 ## Results
 
-| Model | OOF macro-AUC¹ | Gold-58 macro-AUC | **Public LB** | Role |
-|---|---|---|---|---|
-| **exp018: CoAtNet-2 Window-MIL, 5 folds** | 0.8816 | 0.9091 | **0.9290** | **Final submission, main and efficiency track** |
-| DINOv2 2.5D slot ensemble {exp006, exp003, exp005} | 0.8744 | 0.8953 | 0.8930 | Scored fallback |
-| exp008: distilled DINOv2 ViT-S (efficiency) | 0.8708 | 0.888 | 0.8850 | Scored fallback |
+| Model | OOF macro-AUC¹ | Gold-58 macro-AUC | **Public LB** | Runtime, 2 × T4² | Role |
+|---|---|---|---|---|---|
+| **exp021: CoAtNet-2 Window-MIL, 2 seeds × 5 folds (10 checkpoints)** | 0.8840 | 0.9111 | **0.929** | ~100 min | **Final submission, main track** |
+| **exp018 2-fold: CoAtNet-2 Window-MIL, folds {0, 1}** | — ³ | 0.9078 | **0.925** | **~20.5 min** | **Final submission, efficiency track** |
+| exp018: CoAtNet-2 Window-MIL, 5 folds | 0.8816 | 0.9091 | 0.929 | ~53 min | Scored fallback |
+| DINOv2 2.5D slot ensemble {exp006, exp003, exp005} | 0.8744 | 0.8953 | 0.893 | — | Scored fallback |
+| exp008: distilled DINOv2 ViT-S (efficiency) | 0.8708 | 0.888 | 0.885 | — | Scored fallback |
 
 ¹ OOF is scored against report-derived labels, which are a noisy proxy. It understates the leaderboard
 for every model and is not comparable across pipelines.
+² Measured on Kaggle's own 2 × T4 notebook machine (`hrdevelops/rsna-knee-profile-t4`, `-profile-2fold`),
+per ~1,300 studies. exp021 is ~10 × the measured ~9.7 min per checkpoint.
+³ A 2-fold subset has no out-of-fold prediction for studies in the other three folds.
 
-Efficiency track (`AUC/(0.5 − maxAUC) + seconds/32400`, lower is better, maxAUC assumed 0.95): exp018
-scores **−2.036** vs exp008's −1.945. Its runtime is ~15–17 min projected for ~1,300 studies on
-dual T4. At 2 GPUs, DICOM decode rather than the model bounds runtime, so the most accurate model is
-also the efficiency-optimal one.
+Efficiency track (`AUC/(0.5 − maxAUC) + seconds/32400`, lower is better, maxAUC assumed 0.95): **exp018 2-fold
+scores −2.018** vs −1.966 for the 5-fold model. Measured on Kaggle's T4s, CoAtNet-2 inference is model-bound: each
+fold costs ~9.7 min for ~1,300 studies. Cutting to 2 folds brings the run down to the DICOM-decode floor (~20.5
+min) for a small AUC cost (0.929 → 0.925 public).
 
 ## How it works
 
@@ -69,7 +74,7 @@ Full method, including negative results: [`docs/METHOD_WRITEUP.md`](docs/METHOD_
 | `scripts/` | Entry points: label engine, fold building, cache building, training, evaluation, Kaggle staging |
 | `configs/` | One YAML per experiment (`exp018_coatnet2_wmil_v3labels.yaml` is the final model) plus LLM rubrics |
 | `slurm/` | SLURM job scripts for the HPC runs |
-| `notebooks/` | Kaggle submission notebooks (`submit-exp018.ipynb` is the final one) |
+| `notebooks/` | Kaggle submission notebooks (final: `submit-exp021.ipynb` main track, `submit-exp018-2fold.ipynb` efficiency track) |
 | `docs/` | Experiment log (`EXPERIMENTS.md`), method write-up, model cards, submission runbooks |
 | `CLAUDE.md` | Project conventions and competition facts (the working spec this repo was built against) |
 
@@ -82,7 +87,7 @@ Data (`data/`), caches, checkpoints and label tables (`artifacts/`) are not in g
 versions that produced the scored run, the healthy log line to check, and the code versions that must
 never be deployed.
 
-**Reproducing exp018 training** (HPC with SLURM). Paths assume `RSNA_ROOT` holds:
+**Reproducing exp018 training** (HPC with SLURM; exp021 is the same config with `seed: 43`, `configs/exp021_coatnet2_wmil_seed43.yaml`). Paths assume `RSNA_ROOT` holds:
 - `data/raw` (the competition data);
 - `artifacts/labels/labels_v3_candidate.parquet` and `artifacts/folds.parquet` (from the label
   pipeline).

@@ -11,7 +11,7 @@ Recording notes: screen-record code, plots and tables where noted. A talking-hea
 
 **The story in one line:** better labels got us to a ceiling, a public-benchmark audit showed the
 ceiling was the model family rather than the labels, and one structurally different model broke
-through: +0.036 on the leaderboard, and it is the cheapest submission to run.
+through: +0.036 on the leaderboard, and two of its folds also make the efficiency pick.
 
 ---
 
@@ -101,9 +101,14 @@ through: +0.036 on the leaderboard, and it is the cheapest submission to run.
   | **exp018, single model family, 5 folds** | **0.8816** | **0.9091** | **0.929 (+0.036)** |
 
   The gains sit on the mirror-symmetric labels: MCL +0.080 and Lateral Meniscus +0.031 OOF.
-- **Efficiency track:** the same notebook is also efficiency-optimal: Eff **−2.0362** vs exp008's
-  −1.9452, at ~15–17 min projected on dual T4. At 2 GPUs, DICOM decode bounds runtime, so all 5 folds
-  cost almost nothing extra. So one submission serves both tracks.
+- **Efficiency track, decided by measurement:** I had projected the 5-fold run at ~15 min from H100 timing
+  and a borrowed 3.5× T4 factor. A profiling notebook on Kaggle's own 2 × T4 measured **~53 min**: CoAtNet-2 on a
+  T4 is ~12.6× slower than on an H100, and the run is model-bound (~9.7 min per fold). So fold count is the lever:
+  **2 folds run in ~20 min at 0.925 public (Eff −2.018 vs −1.966 for 5 folds)**. Good beat: "measure on the
+  target hardware".
+- **Main track:** a second seed of the same recipe (exp021, 10 checkpoints) adds +0.0024 OOF; 0.929 public.
+- Two follow-ups that did NOT help, worth one sentence: a DINOv2-B backbone in the same pipeline (weaker, and
+  every blend weight lowers OOF), and denser windows at inference (null).
 - (Writeup: §5a, §11; model card `docs/model_cards/exp018_coatnet2_wmil_v3labels.md`)
 
 ## 6. Engineering honesty beat (~1 min, optional)
@@ -122,8 +127,8 @@ Pick one:
 
 ## 7. Results + close (~1 min)
 
-- Final selections: **exp018 (0.929) for both the main and the efficiency track**. The ensemble
-  (0.893) and exp008 (0.885) are scored fallbacks. **Private LB / final rank: fill in once the
+- Final selections: **main = exp021** (10 checkpoints, 0.929); **efficiency = exp018 on 2 folds** (0.925, ~20 min).
+  exp018 5-fold (0.929), the DINOv2 ensemble (0.893) and exp008 (0.885) are scored fallbacks. **Private LB / final rank: fill in once the
   competition closes.**
 - OOF understated the LB for every probe (gaps −0.019, −0.014, −0.047): validation labels are the noisy
   side, not leakage.

@@ -2123,6 +2123,12 @@ efficiency notebook was therefore NOT built -- it would not be used. Every exp01
 formula; the AUC term dominates the formula at this scale (sensitivity ~2.2 per AUC point vs ~0.00003 per
 second of runtime).
 
+> **CORRECTION (2026-09-26): this finding is WRONG.** It rests on a projected model time (0.356 s/study x 3.5 for
+> T4) that Kaggle-hardware measurement showed was ~3.6x too low: 5 folds take 4.479 s/study on ONE T4, so the run
+> is model-bound at ~53 min, not decode-bound at 15.3 min, and 5 folds is NOT efficiency-optimal. 2 folds are
+> (~20.5 min, public 0.925, Eff −2.018 vs −1.966), and that became the efficiency pick. See "C — step 2" and
+> "C — step 3" (2026-09-26).
+
 **Recommendation (not yet acted on): select the existing probe #3 submission for the efficiency-track pick as
 well as the main pick**, if Kaggle's rules permit selecting the same scored submission for both final slots --
 unverified, the user should check this on the platform. If not permitted, resubmit `notebooks/submit-exp018.ipynb`
@@ -2784,6 +2790,60 @@ on 2026-09-21. That was probe #4, which never scored (Kaggle teardown hangs) and
 
 Workstream B is closed. The DINOv2-B `backbone_kwargs` / `img_size` plumbing stays (off by default). exp022 used
 ~3 GPU-hours; no Kaggle submission was spent.
+
+**Information only (requested after the gate; the decision rule is unchanged):** OOF of the rank blend as the
+CoAt weight varies, with the share of 500 paired cluster-bootstrap reps where the blend beats exp021 alone:
+
+| CoAt weight | 0.3 | 0.4 | 0.5 | 0.6 | 0.7 | 0.8 | 0.9 |
+|---|---|---|---|---|---|---|---|
+| OOF Δ vs exp021 | −0.0064 | −0.0046 | −0.0032 | −0.0020 | −0.0010 | −0.0004 | −0.0001 |
+| % reps positive | 0.0% | 0.0% | 0.0% | 0.0% | 0.4% | 4.8% | 32.0% |
+| gold-58 Δ | −0.0080 | −0.0062 | −0.0039 | −0.0031 | −0.0019 | −0.0007 | −0.0004 |
+
+No plateau, and no spike: the curve falls monotonically as the DINOv2 weight rises. The best weight is CoAt = 1.0,
+i.e. exp021 alone. The gate stays FAIL; the blend notebook (subprocess isolation, test-batch ranks) is not built.
+
+## 2026-09-26 — Probes #5/#6 scored; selections final (freeze remains 2026-10-15)
+
+- **exp018 2-fold (folds {0,1}): 0.925 public** (ref 56560771). The pre-declared rule (>= 0.903) makes it the
+  **efficiency pick**. Efficiency score: −2.018 (0.925, ~20.5 min measured) vs −1.966 for 5-fold exp018.
+- **Selections:** main = exp021 (56556092, 0.929); efficiency = exp018 2-fold (56560771, 0.925). Recorded in
+  `docs/SUBMISSION_FINAL.md` §1.
+
+## 2026-09-26 — Dense-window inference on the existing exp018 checkpoints: NULL (report only, not deployed)
+
+The audit's "more windows at eval, same model" idea (`raptor_k_eval` 62 -> 94), tested on OOF with no retraining
+(`scripts/dense_window_eval.py`, job 27506; `scripts/dense_window_compare.py`; `artifacts/dense_window_eval.md`).
+Every slot x1.6: [18,14,12,8,12] -> **[29,22,19,13,19]** = 102 slices, **86.9 windows/study** (standard 51.1). The
+layout is set through `rsna_knee.wmil`'s module globals, which every decode/window/orientation helper reads at
+call time, so the library code is unmodified. Both layouts ran through the SAME inference path (DICOM decode ->
+tag/geometry side -> scored `predict_study`, fp16); all 4,407 studies, 0 decode errors each.
+
+- **Control (path soundness):** standard-layout rerun vs exp018's recorded training-path OOF: **0.8814 vs 0.8816**,
+  per-label Spearman 0.9988–0.9999. The paths differ only in the side rule.
+- **Result:**
+
+  | | standard | dense | Δ | 95% CI | P(Δ ≤ 0) |
+  |---|---|---|---|---|---|
+  | OOF macro (n=4,349, paired cluster bootstrap) | 0.8814 | 0.8812 | **−0.0001** | [−0.0013, +0.0010] | 0.594 |
+  | gold-58 (5-fold mean) | 0.9085 | 0.9095 | +0.0010 | [−0.0048, +0.0066] | 0.382 |
+
+  Per label it is a wash: Lateral Meniscus +0.006, Medial Meniscus +0.002, ACL −0.005, MCL −0.003, the rest within
+  ±0.0015.
+- **Verdict: null.** Denser windows would cost ~1.7x model time and ~1.6x decoded slices for no measurable gain.
+  This is consistent with D's finding that finer effective steps show no dose-response across studies. The
+  lineage's reported gain likely came with their other changes (96-slice-native heads, view TTA) rather than
+  density alone. Not deployed.
+
+## 2026-09-26 — Stale efficiency numbers corrected (one pass)
+
+The −2.0362 efficiency figure, "5 folds is efficiency-optimal" and the ~15–17 min runtime all came from the
+15.3-min projection. They are now corrected to the measured figures (~53 min / ~20.5 min / ~100 min; Eff −1.966 /
+−2.018) and the final selections in: README (results table, efficiency paragraph, notebook pointer), the exp018
+model card (title, intended use, results, limitations; the "seed variance unmeasured" limitation is replaced by the
+measured value), METHOD_WRITEUP (§1, §5a, §8, §11, and §10 gains the Phase 5–6 null results),
+CV_PROGRESS_PRESENTATION, VIDEO_OUTLINE and SUBMISSION_FINAL §3. The historical 2026-09-22 entry in this file
+keeps its text, with a correction note added.
 
 ### D — slice-spacing audit (zero-GPU; `scripts/audit_slice_spacing.py`, job 27468; `artifacts/slice_spacing_audit.md`)
 

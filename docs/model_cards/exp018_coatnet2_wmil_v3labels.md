@@ -1,4 +1,4 @@
-# Model Card: exp018 (5-fold CoAtNet-2 Window-MIL): final submission, both tracks
+# Model Card: exp018 (CoAtNet-2 Window-MIL): the final model family, both tracks
 
 ## Model description
 A single model family, averaged over 5 fold checkpoints, that reads a knee MRI study as a bag of
@@ -35,8 +35,14 @@ Code: `src/rsna_knee/wmil.py` (`WindowMIL`, cache/decode, laterality) and `src/r
     (`artifacts/exp018_cache_audit.md`).
 
 ## Intended use
-The final Kaggle submission for **both** the main leaderboard and the efficiency track
-(`notebooks/submit-exp018.ipynb`; see `docs/SUBMISSION_FINAL.md`). Research artifact for a
+The model family behind both final Kaggle selections (`docs/SUBMISSION_FINAL.md`):
+- **Main track:** exp021, these 5 checkpoints plus 5 retrained with seed 43 (10 checkpoints, public 0.929,
+  `notebooks/submit-exp021.ipynb`).
+- **Efficiency track:** 2 of these checkpoints, folds {0, 1} (public 0.925, ~20.5 min on 2 × T4,
+  `notebooks/submit-exp018-2fold.ipynb`).
+- The full 5-fold model (public 0.929, `notebooks/submit-exp018.ipynb`) is a scored fallback.
+
+Research artifact for a
 competition, not a medical device, and not validated for clinical use.
 
 ## Training data
@@ -67,14 +73,19 @@ an architectural reference only.
 | OOF macro-AUC (vs `labels_v2_final`, 5 folds) | **0.8816** | exp006 (best previous solo) 0.8681; Δ +0.0135, paired cluster-bootstrap 95% CI [+0.0100, +0.0171] |
 | Gold-58 macro-AUC (fold-ensembled, n = 58) | **0.9091** | exp006 0.8897; deployed 3-member ensemble 0.8953 |
 | **Public LB** (Kaggle submission 56460279) | **0.9290** | deployed ensemble 0.8930; exp008 0.8850 |
-| Efficiency score `AUC/(0.5−0.95) + s/32400` | **−2.0362** | exp008 −1.9452. Assumes maxAUC 0.95; runtime is a *projection* of ~15 min on T4 × 2 |
+| **Runtime, 1,300 studies, Kaggle 2 × T4 (measured)** | 5 folds **~53 min**; 2 folds **~20.5 min** | model-bound at 5 folds: ~9.7 min per fold (4.48 s/study for 5 folds on one T4) |
+| Efficiency score `AUC/(0.5−0.95) + s/32400` | 5 folds **−1.966**; 2 folds **−2.018** (public 0.925) | exp008 −1.945. The −2.0362 once reported came from a runtime projection (15.3 min) that measurement showed was ~3.5× too low |
 
 - **Per-fold gold-58:** 0.906 / 0.901 / 0.905 / 0.906 / 0.893.
 - **Where the gains are (Δ OOF vs exp006):** MCL +0.080, Lateral Meniscus +0.031, Lateral OA +0.017,
   ACL +0.016 (CIs exclude 0). Effusion −0.006 and Synovitis −0.006 are flat to slightly down.
 - **Fold-count sensitivity (gold-58, averaged over all subsets):** −0.0067 for 1 fold, −0.0023 for 2,
-  −0.0007 for 3, −0.0002 for 4. At 2 GPUs, decode rather than the model bounds runtime, so all 5 folds
-  cost little extra.
+  −0.0007 for 3, −0.0002 for 4. On Kaggle's T4s the 5-fold run is model-bound (each fold ~9.7 min per
+  1,300 studies), so fold count is the efficiency lever: 2 folds reach the ~20.5 min decode floor.
+- **Seed variance, measured (exp021, seed 43):** end-of-training fold-val differs from seed 42 by 0.0020
+  mean / 0.0046 max; the 10-checkpoint seed ensemble adds +0.0024 OOF [+0.0014, +0.0033].
+- **Dense-window inference is null:** the same checkpoints on 102 slices / ~87 windows instead of 64 / ~51:
+  OOF −0.0001 [−0.0013, +0.0010], gold-58 +0.0010 [−0.0048, +0.0066].
 - **Inference parity:** on HPC, the Kaggle inference path matches the training-path predictions with
   per-label Spearman 0.988–0.9999 (60 studies, 0 errors).
 
@@ -85,9 +96,9 @@ an architectural reference only.
 - **OOF is measured against report-derived labels,** which disagree with image review about 18% of
   the time. It understates the LB here (gap −0.047) and is not comparable across pipelines.
 - **Gold-58 is n = 58** (SE ≈ 0.03): a tripwire, not a precise estimate.
-- **One seed per fold;** seed variance is unmeasured.
-- **Runtime is projected, not measured,** for the full hidden test set on T4 (H100 profiling ×
-  documented T4 factors). The placeholder commit run took about 1 minute.
+- **Runtime was measured on 150 training studies** on Kaggle's own 2 × T4 machine and extrapolated to
+  1,300; the hidden test set's exact size and series mix may shift it somewhat. CoAtNet-2 on a T4 is ~12.6×
+  slower than on an H100 (fp16 autocast, as deployed).
 - **Laterality errors on the ~1% of studies** where the geometric side rule is wrong would swap the
   medial/lateral labels for those studies.
 - **Fluid/synovial labels** (Effusion, Synovitis) did not improve and may be slightly worse than the
