@@ -2960,3 +2960,59 @@ killed and its CSV used. The blend uses per-label test-batch ranks at the fixed 
 
 **Selection rule (C, recorded now):** swap the main-track pick to the blend only if its public LB ≥ 0.930. The
 efficiency pick stays exp018 2-fold regardless. After this probe, modeling is closed for good.
+
+## 2026-09-26 — Offline blend gate RESULT: PASS on all 5 criteria (deploy α = 0.2)
+
+`scripts/blend_v5_gate.py` (job 27602, ZEN4 CPU; the first attempt, an `srun` step, timed out before launching and
+computed nothing). Report: `artifacts/blend_v5_gate.md`. 4,349 OOF studies, 3,681 report clusters, 1,000 reps.
+exp021 alone: OOF 0.8840, gold-58 0.9111. Slot arm alone: OOF 0.8744, gold-58 0.8940.
+
+| # | Criterion | Bar | Value | |
+|---|---|---|---|---|
+| 1 | Mean per-label Spearman, exp021 vs slot | < 0.92 | 0.878 (MCL 0.750 … Effusion 0.944) | PASS |
+| 2 | Cross-fitted gain over exp021 | ≥ +0.0020 | **+0.0024** | PASS |
+| 3 | Paired cluster bootstrap | CI lo > 0, ≥ 95% reps > 0 | [+0.0017, +0.0031], 100% | PASS |
+| 4 | Gold-58 at deploy α | ≥ 0.9091 | 0.9097 (α 0.2) | PASS (margin 0.0006) |
+| 5 | Outer-fold α IQR | ≤ 0.20 | 0.00 (all five folds chose 0.2) | PASS |
+
+Outer-fold gains at α_k = 0.2: +0.0037 / +0.0015 / +0.0025 / +0.0029 / +0.0018 (every fold positive).
+
+**α curve (full OOF, information only):**
+
+| α (slot) | OOF | Δ vs exp021 | 95% CI | gold-58 (Δ) |
+|---|---|---|---|---|
+| 0.1 | 0.8855 | +0.0015 | [+0.0012, +0.0018] | 0.9094 (−0.0017) |
+| **0.2** | 0.8864 | +0.0024 | [+0.0017, +0.0031] | 0.9097 (−0.0014) |
+| 0.3 | 0.8867 | +0.0027 | [+0.0017, +0.0038] | 0.9097 (−0.0014) |
+| 0.4 | 0.8866 | +0.0026 | [+0.0012, +0.0039] | 0.9074 (−0.0038) |
+
+**Read-out.** The inner curves peak at α = 0.3–0.4, and the tolerance rule pulls every fold back to 0.2, as
+designed. Gold-58 dips slightly at every α > 0 but stays inside the pre-set 0.002 tolerance at 0.2. The OOF gain is
+small (+0.0024 ≈ 0.6 bootstrap SD of a single model's macro) but very consistent. Whether it survives the ~0.03
+OOF→LB under-rating of the CoAt family is what the probe measures; the selection rule (swap only at LB ≥ 0.930)
+stands.
+
+### B — `submit-blend-v5` build
+
+- **`rsna-knee-code-0916`** (new, private): the 7 files of commit `d767fdc` (2026-09-16), identical to the
+  live `rsna-knee-code` before the 09-23 update. SHA-256 is verified against git and against a re-download from
+  Kaggle. It is a separate dataset rather than a version pin because a kernel's `dataset_sources` always takes a
+  dataset's latest version.
+- **`scripts/build_blend_v5_notebook.py`** builds each child from the SCORED notebook's code cells, with asserted
+  one-time substitutions only:
+  - CoAt child ← `submit-exp021` v1 (pulled from Kaggle and verified identical to `notebooks/submit-exp021.ipynb`):
+    `OUT_PATH` only.
+  - Slot child ← `ensamble-notebook` (pulled from Kaggle as `notebooks/ensamble-notebook-scored.ipynb`; code
+    identical to `submit-ensemble.ipynb` except comments): `OUT_PATH` and the code dataset name.
+- **Parent:** never imports torch (asserted at the end).
+  - Runs the children sequentially with `Popen(start_new_session=True)` under a per-child timeout and a
+    whole-run deadline of 8.25 h.
+  - A child still alive 180 s after its CSV is complete and unchanged is killed (process group) and its CSV used.
+  - Validation: header, row count, UIDs, no NaN, [0, 1], and prior-fallback rows ≤ 0.5% of rows. That is 0 on the
+    3-row placeholder and ≤ 6 of 1,300 on the full test, so a single corrupt DICOM cannot throw away a whole arm.
+  - Blend = 0.8·rank(exp021) + 0.2·rank(slot), per-label test-batch percentile ranks.
+  - Fallbacks: slot fails → exp021 unchanged; CoAt fails → slot; both over the prior tolerance → exp021; both
+    fail → all-prior rows.
+- **Mock-child test on HPC** (6 cases: both ok, CoAt hangs after its CSV, slot crashes, prior row in CoAt, both
+  crash, slot times out): every case wrote a valid submission with the expected mode, and the blend arithmetic was
+  checked by hand.
