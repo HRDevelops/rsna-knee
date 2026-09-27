@@ -3016,3 +3016,41 @@ stands.
 - **Mock-child test on HPC** (6 cases: both ok, CoAt hangs after its CSV, slot crashes, prior row in CoAt, both
   crash, slot times out): every case wrote a valid submission with the expected mode, and the blend arithmetic was
   checked by hand.
+
+## 2026-09-27 — B runtime check FAILS: the slot arm cannot run in time on Kaggle T4. Blend-v5 not staged.
+
+**Placeholder commit (`hrdevelops/submit-blend-v5` v1): mechanically clean.** Status COMPLETE; CoAt child
+1.5 min and slot child 4.0 min, both `exit code 0`, 3 rows, 0 on prior. Mode: blend. The parent exited
+normally without importing torch; total 5.5 min.
+
+**Full-test projection (`hrdevelops/rsna-knee-profile-blend-v5`, the same children and runner, each on its own
+disjoint cold set of 120 training studies, 2 × T4, model loading included):**
+
+| child | measured | s/study | projected for 1,300 studies |
+|---|---|---|---|
+| CoAt (exp021, 10 checkpoints) | 10.8 min / 120 | 5.38 | **116 min** |
+| slot (3 members × 5 folds, rung 0) | 117.5 min / 120 | **58.8** | **21.2 h** |
+| total | | | **23.2 h**, against the < 7 h requirement → **FAIL** |
+
+The placeholder calibration agrees (61.3 s/study). The 3-member DINOv2 ensemble is ~11× slower per study than the
+10-checkpoint CoAtNet ensemble on T4; the 2026-09-11 "~62 min on T4 × 2" was a 3.5×-from-H100 projection, the
+same class of error as the corrected exp018 efficiency projection.
+
+**Consequence: submit-blend-v5 v1 is NOT staged, and must not be submitted.** On the full test, the slot child's
+own degradation ladder (unchanged scored logic, budget 6.8 h) would project:
+- rung 0 (3 members) ≈ 21 h: too slow;
+- rung 1 (exp006 + exp005, cost 4/7) ≈ 12 h: too slow;
+- **rung 2 (exp005 alone, cost 1/7) ≈ 3 h: fits.**
+
+So it would run exp005 alone, and the submission would be a 0.8/0.2 blend with exp005, which the gate never
+evaluated. The parent's deadline logic keeps that run valid; it is simply not the blend that passed the gate.
+
+**Finding about the scored 0.893 (inferred, not directly observable: hidden-test logs are not shown).** The scored
+`ensamble-notebook` v3 runs the same ladder on the same 2 × T4 hardware. At ~59 s/study it projects ~21 h at rung 0,
+so it almost certainly chose rung 2, meaning **the public 0.893 is most likely exp005 (DINOv2 ViT-S) alone, not the
+3-member ensemble**. The 2026-09-17 OOF↔LB gap for "the ensemble" (−0.0186) should be read with that in mind. The
+exp006/exp003 weights were likely never used on the hidden test.
+
+**Status:** workstream B stopped at the runtime requirement. There is no blend probe, and the selections are
+unchanged (main exp021 56556092, efficiency exp018 2-fold 56560771). Any further blend variant would need a new
+pre-registered gate and a user decision; nothing has been started.

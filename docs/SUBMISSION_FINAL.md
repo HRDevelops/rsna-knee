@@ -11,7 +11,7 @@ Frozen 2026-09-23; selections updated 2026-09-26 (main = exp021, efficiency = ex
 | **Main leaderboard** | **56556092** (2026-09-25 17:07 UTC): exp021, 10-checkpoint seed ensemble | **0.929** | `hrdevelops/submit-exp021` v1 | `rsna-knee-exp018-code`, `rsna-knee-exp018-weights`, `rsna-knee-exp021-weights`, competition data | ~100 min (10 × ~9.7 min/fold) |
 | **Efficiency track** | **56560771** (2026-09-25 21:48 UTC): exp018, 2 folds {0, 1} | **0.925** | `hrdevelops/submit-exp018-2fold` v1 | `rsna-knee-exp018-code`, `rsna-knee-exp018-weights`, competition data | **~20.5 min** |
 | Fallback: exp018 5-fold | 56460279 (2026-09-22 09:22 UTC) | 0.929 | `hrdevelops/submit-exp018` | `rsna-knee-exp018-code`, `rsna-knee-exp018-weights` | ~53 min |
-| Fallback: ensemble | 56273364 (`ensamble_notebook` v3) | 0.893 | `hrdevelops/ensamble-notebook` | `rsna-knee-code`, `rsna-knee-exp006/003/005-weights` | — |
+| Fallback: ensemble | 56273364 (`ensamble_notebook` v3) | 0.893 | `hrdevelops/ensamble-notebook` | `rsna-knee-code`, `rsna-knee-exp006/003/005-weights` | 3 members: ~21 h measured (59 s/study), so on the full test its own time ladder almost certainly fell to rung 2, **exp005 alone** (see EXPERIMENTS 2026-09-27) |
 | Fallback: efficiency | 56297755 (`rsna-knee-submit-efficiency` v2) | 0.885 | `hrdevelops/rsna-knee-submit-efficiency` | `rsna-knee-code`, `rsna-knee-exp008-weights` | — |
 
 All are `COMPLETE` with a score. The CLI cannot show or set final selections, so **make the selections in the
@@ -101,6 +101,7 @@ is a specific reason to take the fix.
 | `hrdevelops/submit-blend018-ipynb` | v2, v3 | hung 9h / 10h at teardown after writing the submission; never scored |
 | `hrdevelops/submit-blend018-ipynb` | v4 | ends with `os._exit(0)`: papermill `DeadKernelError`, so the run is `ERROR` |
 | `scripts/hard_exit_tail.py` | any | same `os._exit(0)`: **never add it to a submission notebook** |
+| `hrdevelops/submit-blend-v5` | v1 (placeholder check passed) | **do not submit.** Its slot child cannot run the gated 3-member ensemble in time (~21 h on 2 × T4); on the full test it would silently drop to exp005 alone, a blend the gate never tested |
 | `rsna-knee-exp018-code` rebuilt from HEAD | any | HEAD's `infer_wmil.py` (try/finally, `cancel_futures`, untimed join) is believed correct but has **never run on Kaggle**; the scored 8,245 B version is the only one to deploy |
 
 Rule of thumb: **deploy only artifacts that have produced a scored submission.** If any new code must go
