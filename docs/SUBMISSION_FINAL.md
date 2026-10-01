@@ -11,8 +11,8 @@ Frozen 2026-09-23; selections updated 2026-09-26 (main = exp021, efficiency = ex
 | **Main leaderboard** | **56556092** (2026-09-25 17:07 UTC): exp021, 10-checkpoint seed ensemble | **0.929** | `hrdevelops/submit-exp021` v1 | `rsna-knee-exp018-code`, `rsna-knee-exp018-weights`, `rsna-knee-exp021-weights`, competition data | ~100 min (10 × ~9.7 min/fold) |
 | **Efficiency track** | **56560771** (2026-09-25 21:48 UTC): exp018, 2 folds {0, 1} | **0.925** | `hrdevelops/submit-exp018-2fold` v1 | `rsna-knee-exp018-code`, `rsna-knee-exp018-weights`, competition data | **~20.5 min** |
 | Fallback: exp018 5-fold | 56460279 (2026-09-22 09:22 UTC) | 0.929 | `hrdevelops/submit-exp018` | `rsna-knee-exp018-code`, `rsna-knee-exp018-weights` | ~53 min |
-| Fallback: ensemble | 56273364 (`ensamble_notebook` v3) | 0.893 | `hrdevelops/ensamble-notebook` | `rsna-knee-code`, `rsna-knee-exp006/003/005-weights` | 3 members: ~21 h measured (59 s/study), so on the full test its own time ladder almost certainly fell to rung 2, **exp005 alone** (see EXPERIMENTS 2026-09-27) |
-| Fallback: efficiency | 56297755 (`rsna-knee-submit-efficiency` v2) | 0.885 | `hrdevelops/rsna-knee-submit-efficiency` | `rsna-knee-code`, `rsna-knee-exp008-weights` | — |
+| Fallback: DINOv2 slot pipeline (most likely exp005 alone after the T4 runtime fallback) | 56273364 (`ensamble_notebook` v3) | 0.893 | `hrdevelops/ensamble-notebook` | `rsna-knee-code`, `rsna-knee-exp006/003/005-weights` | 3 members: ~21 h measured (59 s/study), so its time ladder almost certainly fell to rung 2, exp005 alone (inferred, EXPERIMENTS 2026-09-27) |
+| Fallback: efficiency | 56297755 (`rsna-knee-submit-efficiency` v2) | 0.885 | `hrdevelops/rsna-knee-submit-efficiency` | `rsna-knee-code`, `rsna-knee-exp008-weights` | fold count chosen at run time by the efficiency formula; the scored count is unknown |
 
 All are `COMPLETE` with a score. The CLI cannot show or set final selections, so **make the selections in the
 Kaggle UI** (My Submissions → select).
@@ -83,7 +83,7 @@ Deploy only version 1 of each notebook (the commit-checked ones).
    existing 56460279 selected.
 
 **Second slot, if a distinct pick is required:** resubmit exp018 unchanged using the steps above. If a
-different model is required, use the ensemble (56273364, 0.893). It is already scored, so it can be
+different model is required, use the DINOv2 slot pipeline (56273364, 0.893; most likely exp005 alone after the T4 runtime fallback). It is already scored, so it can be
 selected as-is. Do not re-run it.
 
 **Fallback notebooks (ensemble / efficiency), only if a re-run is ever forced:** as of 2026-09-23,

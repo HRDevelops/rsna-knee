@@ -20,7 +20,11 @@ CoAt arm = exp021 10-checkpoint mean. Slot arm = {exp006, exp003, exp005} throug
 OOF population, one global slot weight alpha in {0, .1, .2, .3, .4}, nested CV over 5 GroupKFold outer folds by
 report_cluster_id, alpha rule = smallest alpha within 0.0005 of the best inner gain.
 
+`--slot-arm exp005` (re-gate pre-registered 2026-10-01, commit a05ad9f) swaps ONLY the slot arm for exp005's 5-fold
+mean (the model the scored ensemble notebook falls back to on T4); criteria, grid and alpha rule are unchanged.
+
     python scripts/blend_v5_gate.py --out artifacts/blend_v5_gate.md
+    python scripts/blend_v5_gate.py --slot-arm exp005 --out artifacts/blend_v5_gate_exp005.md
 """
 from __future__ import annotations
 
@@ -75,6 +79,7 @@ def pick_alpha(gains: dict[float, float]) -> float:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--reps", type=int, default=1000)
+    ap.add_argument("--slot-arm", choices=["recipe", "exp005"], default="recipe")
     ap.add_argument("--out", type=Path, default=None)
     a = ap.parse_args()
     root = Path(os.environ.get("RSNA_ROOT", Path(__file__).resolve().parent.parent.parent))
@@ -97,12 +102,13 @@ def main() -> None:
     y = np.stack([[truth[u][i] for u in uids] for i in range(12)]).astype(int)
     P = {n: oof[n].loc[uids, TARGETS].to_numpy().T for n in names}                      # [12, N]
     coat = (P[S42] + P[S43]) / 2
-    slot = slot_arm(P, P, recipe)
+    exp005 = "exp005_dinov2s_slot_v3labels"
+    slot = slot_arm(P, P, recipe) if a.slot_arm == "recipe" else P[exp005]
     gu = sorted(set.intersection(*[set(gold[n].index) for n in names]) & set(gtruth))
     gy = np.stack([[gtruth[u][i] for u in gu] for i in range(12)]).astype(int)
     G = {n: gold[n].loc[gu, TARGETS].to_numpy().T for n in names}
     gcoat = (G[S42] + G[S43]) / 2                    # both seeds' 5-fold means = the 10-checkpoint mean
-    gslot = slot_arm(G, P, recipe)
+    gslot = slot_arm(G, P, recipe) if a.slot_arm == "recipe" else G[exp005]   # exp005: 5-fold mean
 
     pc, ps = pct(coat, coat), pct(slot, slot)
     gpc, gps = pct(gcoat, coat), pct(gslot, slot)
@@ -147,9 +153,11 @@ def main() -> None:
         ("5 outer alpha IQR <= 0.20", iqr <= IQR_BAR, f"{iqr:.2f} (alphas {fold_alphas})"),
     ]
 
-    L = ["# Offline blend gate: exp021 + slot ensemble (pre-registered 2026-09-26, commit 185eab7)", "",
+    title = ("exp021 + slot ensemble (pre-registered 2026-09-26, commit 185eab7)" if a.slot_arm == "recipe"
+             else "exp021 + exp005 (re-gate pre-registered 2026-10-01, commit a05ad9f)")
+    L = [f"# Offline blend gate: {title}", "",
          f"OOF: {len(uids)} non-gold studies vs `labels_v2_final`, {len(keys)} report clusters, {a.reps} paired "
-         f"cluster-bootstrap reps. Gold-58 n={len(gu)}. Recipe: `{recipe_path.name}`.", "",
+         f"cluster-bootstrap reps. Gold-58 n={len(gu)}. Slot arm: {'recipe ' + recipe_path.name if a.slot_arm == 'recipe' else 'exp005 5-fold mean'}.", "",
          f"exp021 (CoAt arm): OOF {base:.4f}, gold-58 {gbase:.4f} | slot arm: OOF {macro(slot, y):.4f}, "
          f"gold-58 {macro(gslot, gy):.4f}", "",
          "## Criterion 1: per-label Spearman, exp021 vs slot arm (OOF)", "",

@@ -13,7 +13,7 @@ competition closes Oct 22).
 
 1. **Problem + the twist** (0:00–0:55): 58 real labels, 4,407 reports, no reports at test time.
 2. **Phase 1: weak supervision** (0:55–1:50): LLM label engine and a noisy-student round → `labels_v3`.
-3. **Phase 2: the DINOv2 slot model and its ceiling** (1:50–2:50): 0.893, then six null ablations.
+3. **Phase 2: the DINOv2 slot model and its ceiling** (1:50–2:50): 0.893 (most likely exp005 alone), then six null ablations.
 4. **Phases 3–4: audit → exp018** (2:50–3:50): what the audit found, and the window-MIL model that
    broke the ceiling.
 5. **Results + lessons** (3:50–4:35): the final table, one model family for both tracks, and two of my
@@ -57,7 +57,8 @@ round made it worse."
   **6 slots** {sag, cor, ax} × {fluid-sensitive or not} → cross-slot transformer → 12 per-finding
   attention queries.
 - Progress (OOF macro vs proxy labels): ViT-S **0.849** → ViT-B **0.854** → + v3 labels **0.868** →
-  3-model ensemble **0.874**. **Public LB 0.893**, with a distilled efficiency model at 0.885.
+  3-model ensemble **0.874**. **Public LB 0.893** for the DINOv2 slot pipeline (most likely exp005 alone after the T4 runtime fallback), with a distilled
+  efficiency model at 0.885.
 - Then **six bootstrap-tested ablations, all null** (noise SD ≈ 0.004, bar +0.0082):
 
   | Ablation | Δ OOF |
@@ -70,7 +71,8 @@ round made it worse."
 
   ConvNeXt-V2 was redundant (corr 0.93); a 3D ResNet was killed.
 
-**Say (≈60 s):** "This model got me to 0.893. Then I tested every remaining lever properly, with
+**Say (≈60 s):** "This model family got me to 0.893. (On Kaggle's T4s the notebook's time budget almost certainly
+dropped it to its smallest member, exp005, so that score is one ViT-S model.) Then I tested every remaining lever properly, with
 pre-registered bars, the same folds and bootstrap noise, and all of them were null. At the time I
 concluded the ceiling was the labels. That turned out to be wrong."
 
@@ -98,7 +100,7 @@ things at once, so I can't tell you which one mattered: that's the honest caveat
 
 | | OOF | Gold-58 | Public LB | Runtime (T4 × 2) |
 |---|---|---|---|---|
-| DINOv2 3-model ensemble | 0.8744 | 0.8953 | 0.893 | ~62 min (projected) |
+| DINOv2 slot pipeline (most likely exp005 alone after the T4 runtime fallback) | 0.8631 (exp005) | 0.8903 | 0.893 | 3 members: ~21 h measured; exp005 rung: shorter |
 | DINOv2 distilled (old efficiency pick) | 0.8708 | 0.888 | 0.885 | minutes |
 | **exp021: CoAtNet-2 Window-MIL, 2 seeds × 5 folds (final, accuracy)** | **0.8840** | **0.9111** | **0.929** | ~100 min |
 | **exp018 on 2 folds (final, efficiency)** | — | 0.9078 | **0.925** | **~20 min (measured)** |
@@ -113,7 +115,8 @@ things at once, so I can't tell you which one mattered: that's the honest caveat
 - Lessons:
   - A run of null ablations tells you *that* family is saturated, not what the ceiling is.
   - Survey outside your own pipeline before concluding "label ceiling".
-  - Measure runtime on the target hardware; a borrowed speed factor was off by 3.6×.
+  - Measure runtime on the target hardware; a borrowed speed factor was off by 3.6× (CoAtNet) and ~13× (DINOv2).
+  - A runtime fallback ladder can silently change which model gets scored: log the chosen rung.
 
 **Say (≈45 s):** "One model family does both jobs: ten checkpoints for accuracy, two for speed. Two lessons:
 six null results proved my model family was saturated, not that the problem was; and a runtime I had projected

@@ -43,7 +43,8 @@ through: +0.036 on the leaderboard, and two of its folds also make the efficienc
   {sag, cor, ax} × {fluid-sensitive or not} → cross-slot transformer → 12 per-finding attention
   queries.
 - The scale ladder: ViT-S → ViT-B (+0.005, replicated twice); then a 3-member ensemble (OOF 0.8744)
-  and a distilled ViT-S efficiency model (0.8708). **Public LB 0.893 / 0.885.**
+  and a distilled ViT-S efficiency model (0.8708). **Public LB 0.893 / 0.885.** The 0.893 is the DINOv2 slot
+  pipeline, most likely exp005 alone after the T4 runtime fallback (3 members measure ~21 h on T4; inferred, not confirmed).
 - The ceiling: **six bootstrap-tested ablations, all null** against a pre-registered bar (noise SD
   ≈ 0.004):
 
@@ -97,7 +98,7 @@ through: +0.036 on the leaderboard, and two of its folds also make the efficienc
 
   | | OOF | Gold-58 | Public LB |
   |---|---|---|---|
-  | DINOv2 3-member ensemble | 0.8744 | 0.8953 | 0.893 |
+  | DINOv2 slot pipeline (most likely exp005 alone after the T4 runtime fallback) | 0.8631 | 0.8903 | 0.893 |
   | **exp018, single model family, 5 folds** | **0.8816** | **0.9091** | **0.929 (+0.036)** |
 
   The gains sit on the mirror-symmetric labels: MCL +0.080 and Lateral Meniscus +0.031 OOF.
@@ -128,10 +129,12 @@ Pick one:
 ## 7. Results + close (~1 min)
 
 - Final selections: **main = exp021** (10 checkpoints, 0.929); **efficiency = exp018 on 2 folds** (0.925, ~20 min).
-  exp018 5-fold (0.929), the DINOv2 ensemble (0.893) and exp008 (0.885) are scored fallbacks. **Private LB / final rank: fill in once the
+  exp018 5-fold (0.929), the DINOv2 slot pipeline (0.893, most likely exp005 alone after the T4 runtime fallback) and exp008 (0.885) are scored fallbacks. **Private LB / final rank: fill in once the
   competition closes.**
-- OOF understated the LB for every probe (gaps −0.019, −0.014, −0.047): validation labels are the noisy
-  side, not leakage.
+- OOF understated the LB for every probe (gaps ~−0.030 corrected, −0.014, −0.047): validation labels are the
+  noisy side, not leakage.
+- Lesson: a runtime fallback ladder can silently change which model is scored. Log the chosen rung, and
+  measure on the target hardware before trusting what a score belongs to.
 - What we would do with more time: ablate exp018's bundled changes (FOV, windows vs slots,
   laterality) to find out which one mattered. Its Effusion and Synovitis did not improve over DINOv2.
 - Repo, weights and writeup pointer (Apache-2.0; `README.md`, `docs/METHOD_WRITEUP.md`).

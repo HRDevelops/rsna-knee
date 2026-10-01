@@ -19,14 +19,18 @@ disagree systematically with the expert labels (~18%). This repository contains:
 | **exp021: CoAtNet-2 Window-MIL, 2 seeds × 5 folds (10 checkpoints)** | 0.8840 | 0.9111 | **0.929** | ~100 min | **Final submission, main track** |
 | **exp018 2-fold: CoAtNet-2 Window-MIL, folds {0, 1}** | — ³ | 0.9078 | **0.925** | **~20.5 min** | **Final submission, efficiency track** |
 | exp018: CoAtNet-2 Window-MIL, 5 folds | 0.8816 | 0.9091 | 0.929 | ~53 min | Scored fallback |
-| DINOv2 2.5D slot ensemble {exp006, exp003, exp005} | 0.8744 | 0.8953 | 0.893 | — | Scored fallback |
-| exp008: distilled DINOv2 ViT-S (efficiency) | 0.8708 | 0.888 | 0.885 | — | Scored fallback |
+| DINOv2 2.5D slot pipeline (most likely exp005 alone after the T4 runtime fallback)⁴ | 0.8631 | 0.8903 | 0.893 | — | Scored fallback |
+| exp008: distilled DINOv2 ViT-S (efficiency)⁵ | 0.8708 | 0.888 | 0.885 | — | Scored fallback |
 
 ¹ OOF is scored against report-derived labels, which are a noisy proxy. It understates the leaderboard
 for every model and is not comparable across pipelines.
 ² Measured on Kaggle's own 2 × T4 notebook machine (`hrdevelops/rsna-knee-profile-t4`, `-profile-2fold`),
 per ~1,300 studies. exp021 is ~10 × the measured ~9.7 min per checkpoint.
 ³ A 2-fold subset has no out-of-fold prediction for studies in the other three folds.
+⁴ The notebook ensembles {exp006, exp003, exp005} (OOF 0.8744, gold-58 0.8953), but on Kaggle's 2 × T4 the three
+members measure ~59 s/study (~21 h for the test set), so its time-budget ladder almost certainly fell back to
+exp005 alone. Inferred, not confirmed: the hidden-test log is not visible. The figures shown are exp005's.
+⁵ OOF is the 5-fold figure; the notebook chose its fold count at run time, and the scored count is unknown.
 
 Efficiency track (`AUC/(0.5 − maxAUC) + seconds/32400`, lower is better, maxAUC assumed 0.95): **exp018 2-fold
 scores −2.018** vs −1.966 for the 5-fold model. Measured on Kaggle's T4s, CoAtNet-2 inference is model-bound: each

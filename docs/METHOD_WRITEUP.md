@@ -17,13 +17,17 @@ attention, laterality-normalized, ensembled via greedy forward selection over fo
 models. Final ensemble OOF macro-AUC (vs. the calibrated report labels) is **0.8744**, distilled
 into a single efficiency-track model at **0.8708** (−0.0036, comfortably inside the 0.015 target)
 running in **7.5 minutes** per ~1,300 studies on the measured hardware (§8). Both probes are
-submitted and scored: **ensemble 0.893 public LB, efficiency 0.885 public LB** (−0.008 delta,
-inside the CLAUDE.md §4 efficiency-track target); both OOF↔LB gaps measured trustworthy
-(−0.0186, −0.0142, both < the pre-registered 0.02 threshold — see §11 and `docs/EXPERIMENTS.md`).
+submitted and scored: **DINOv2 slot pipeline 0.893 public LB (most likely exp005 alone after the T4 runtime fallback), efficiency
+0.885 public LB**. *Correction (2026-10-01):* both notebooks choose their configuration at run time from a
+time/efficiency calibration. On Kaggle's 2 × T4 the 3-member ensemble measures ~59 s/study (~21 h for the test
+set), so the scored 0.893 was very likely exp005 alone (inferred, not confirmed; hidden-test logs are not shown),
+and exp008's scored fold count is unknown. The probe #1 OOF↔LB gap is therefore likely ~−0.030 (exp005's OOF
+0.8631 vs 0.893), not the −0.0186 first recorded (§11).
 
 **Update, 2026-09-21/22 (§5a): a structurally different image model — a single fully fine-tuned
 CoAtNet-2 with attention-MIL over adjacent-slice windows, in-house implementation of a public
-reference formulation — scored 0.929 public LB solo**, a +0.036 gain over the deployed ensemble, and
+reference formulation — scored 0.929 public LB solo**, a +0.036 gain over the DINOv2 slot pipeline's 0.893
+(most likely exp005 alone after the T4 runtime fallback), and
 is now the strongest scored model in the project. Its own efficiency-track re-evaluation finds it
 beats the deployed distilled student on the formula too.
 
@@ -34,7 +38,7 @@ one seed). Efficiency track: **exp018 on 2 folds** (public 0.925), which Kaggle'
 blend of exp018 with the original ensemble (probe #4) was built and rehearsed but hung on Kaggle twice
 after finishing its work and **never scored**; it was abandoned (§5a, §9, §11). The original DINOv2
 pipeline (§5–§8) is kept fully documented as the path that produced the label engine, the teacher
-ensemble and the first two scored submissions (0.893 / 0.885); it is no longer part of the final
+ensemble and the first two scored submissions (0.893, most likely exp005 alone after the T4 runtime fallback; 0.885); it is no longer part of the final
 selection. Final private-leaderboard rank: **pending competition close.**
 
 Solo effort, on a shared university HPC cluster (SLURM, H100 x4/node, BeeGFS shared storage — see
@@ -223,7 +227,7 @@ labels most sensitive to the laterality fix — MCL (+0.080), Lateral Meniscus (
 (+0.017), ACL (+0.016) — with Effusion/Synovitis flat to slightly down. The design bundles several
 changes at once (backbone family, window-MIL input, wider FOV, corrected laterality); no ablation
 isolates which one is responsible. **Scored 0.929 on the public leaderboard** (probe #3, 2026-09-22)
-— a further +0.036 over the deployed ensemble's 0.893, larger than the OOF gain predicted, consistent
+— a further +0.036 over the DINOv2 slot pipeline's 0.893 (most likely exp005 alone after the T4 runtime fallback), larger than the OOF gain predicted, consistent
 with this project's standing finding that OOF (scored against report-derived labels) undersells any
 model whose gains come from genuinely reading the images rather than the report proxy (§3, §11).
 
@@ -411,6 +415,10 @@ Lessons:
   system under test.
 - A code path that has never completed a scored submission carries risk that off-platform testing
   cannot fully clear.
+- **A runtime degradation ladder can silently change which model is scored.** The ensemble notebook's
+  time-budget ladder very likely scored exp005 alone, not the 3-member ensemble every document described, and
+  the efficiency notebook chose its own fold count. Log the chosen rung somewhere visible, and measure runtime on
+  the target hardware before trusting what a score belongs to. A 3.5× H100-to-T4 factor was off by ~13× here.
 
 The `prefetch_decode` fix (which does not involve the timed join) was later pushed to the frozen
 notebooks' code dataset (`rsna-knee-code`) as insurance.
@@ -493,8 +501,16 @@ After exp018 (Window-MIL CoAtNet-2) became the model family, every further lever
 
 | | OOF macro-AUC (reference) | Public LB | Gap (OOF − LB) | Verdict |
 |---|---|---|---|---|
-| Probe #1 — ensemble (3 members) | 0.8744 | **0.8930** | −0.0186 | TRUSTWORTHY (< 0.02) |
-| Probe #2 — efficiency (exp008) | 0.8708 | **0.8850** | −0.0142 | TRUSTWORTHY (< 0.02) |
+| Probe #1 — DINOv2 slot pipeline (most likely exp005 alone after the T4 runtime fallback) | 0.8631 (exp005; 0.8744 had all 3 members run) | **0.8930** | **~−0.030** (−0.0186 as first recorded) | Exceeds the 0.02 threshold once corrected |
+| Probe #2 — efficiency (exp008, fold count chosen at run time, unknown) | 0.8708 (5 folds; ~0.865 at 1 fold) | **0.8850** | −0.014 to −0.020 | Within the threshold either way |
+
+> **Correction (2026-10-01).** Both notebooks pick their configuration at run time. The ensemble notebook drops
+> members when its calibration projects past the time budget, and the efficiency notebook picks the fold count
+> that minimises the efficiency formula. Measured on Kaggle's 2 × T4 (2026-09-27), the 3 members take ~59 s/study,
+> ~21 h for the test set, so the ladder almost certainly fell to its last rung, exp005 alone. This is inferred,
+> not confirmed (the chosen rung was not logged anywhere visible for the hidden-test run). The probe #1 gap is then
+> ~−0.030, larger than the 0.02 threshold set at the time, and in line with the larger gaps every later probe
+> showed. The "trustworthy" verdict below was reached on the 3-member OOF and should be read with that in mind.
 
 Both gaps are negative (LB beats OOF) and land on the same sign with comparable, sub-threshold
 magnitude — read as a mild positive signal on validation-methodology soundness rather than a
@@ -506,9 +522,9 @@ report-derived OOF proxy (~18% systematic disagreement, §3) — a model that le
 pathology can plausibly score higher against the clean labels than our own noisier internal
 validation predicts.
 
-Efficiency-track delta: LB 0.885 vs. ensemble LB 0.893 = **−0.008**, comfortably inside the
-"within ~2 pts of the big ensemble" target (CLAUDE.md §4) — matches the OOF-predicted delta
-(−0.0036) closely enough to trust the distillation held up on real hidden data.
+Efficiency-track delta: LB 0.885 vs. 0.893 = **−0.008**. *Correction (2026-10-01):* this was recorded as
+"distilled student vs the big ensemble", but the 0.893 was most likely exp005 alone after the T4 runtime fallback and exp008's fold count was chosen at run
+time, so the comparison is not the one the OOF-predicted −0.0036 describes.
 
 **Gap to the leaderboard top (~6–7 points) is real and being treated as structural, not noise** —
 see `docs/EXPERIMENTS.md`'s 2026-09-17 diagnostic entry for the per-label breakdown against an
@@ -530,14 +546,14 @@ architectural, not an artifact of our labels or validation.
 the project, and the first probe to meaningfully close the gap to the public top (down from ~6–7
 points to within ~2 points of the highest public scores surveyed in the benchmark audit). OOF
 predicted +0.0135 macro over the deployed ensemble's best solo member; the LB delta was +0.036 over
-the deployed ensemble itself — consistent with, and larger than, the standing OOF-understates-truth
+the scored DINOv2 slot pipeline (most likely exp005 alone after the T4 runtime fallback) — consistent with, and larger than, the standing OOF-understates-truth
 pattern above, as expected for a model whose gains come from genuinely different image evidence
 rather than fitting the report-label proxy more closely.
 
 | | OOF macro-AUC (reference) | Public LB | Gap (OOF − LB) | Verdict |
 |---|---|---|---|---|
-| Probe #1 — ensemble (3 members) | 0.8744 | 0.8930 | −0.0186 | TRUSTWORTHY (< 0.02) |
-| Probe #2 — efficiency (exp008) | 0.8708 | 0.8850 | −0.0142 | TRUSTWORTHY (< 0.02) |
+| Probe #1 — DINOv2 slot pipeline (most likely exp005 alone after the T4 runtime fallback) | 0.8631 | 0.8930 | ~−0.030 (corrected; first recorded −0.0186) | See the correction above |
+| Probe #2 — efficiency (exp008, fold count unknown) | 0.8708 (5 folds) | 0.8850 | −0.014 to −0.020 | Within the threshold |
 | **Probe #3 — exp018 (solo, §5a)** | **0.8816** | **0.9290** | **−0.0474** | Consistent in sign with #1/#2, larger in magnitude — expected (see above), not investigated as an anomaly |
 
 **Probe #4 (rank-space blend, exp018 0.75 / deployed ensemble 0.25): attempted and abandoned,
@@ -560,8 +576,8 @@ This matches the original plan in CLAUDE.md §4 in shape (an accuracy pick and a
 picks come from one model family rather than an ensemble plus a distilled student. The scored notebook
 versions are unchanged. The frozen notebooks' code dataset received the fixed
 `prefetch_decode` as insurance. A hard-exit final cell was considered for them too, and rejected once
-v4 showed that Kaggle treats it as a failed run. The ensemble
-(0.893) and exp008 (0.885) remain scored and selectable as fallbacks. Final private-leaderboard
+v4 showed that Kaggle treats it as a failed run. The DINOv2 slot pipeline
+(0.893, most likely exp005 alone after the T4 runtime fallback) and exp008 (0.885) remain scored and selectable as fallbacks. Final private-leaderboard
 rank: **pending competition close.**
 
 ## 12. Reproducibility

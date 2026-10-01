@@ -72,7 +72,7 @@ an architectural reference only.
 |---|---|---|
 | OOF macro-AUC (vs `labels_v2_final`, 5 folds) | **0.8816** | exp006 (best previous solo) 0.8681; Δ +0.0135, paired cluster-bootstrap 95% CI [+0.0100, +0.0171] |
 | Gold-58 macro-AUC (fold-ensembled, n = 58) | **0.9091** | exp006 0.8897; deployed 3-member ensemble 0.8953 |
-| **Public LB** (Kaggle submission 56460279) | **0.9290** | deployed ensemble 0.8930; exp008 0.8850 |
+| **Public LB** (Kaggle submission 56460279) | **0.9290** | DINOv2 slot pipeline 0.8930 (most likely exp005 alone after the T4 runtime fallback); exp008 0.8850 |
 | **Runtime, 1,300 studies, Kaggle 2 × T4 (measured)** | 5 folds **~53 min**; 2 folds **~20.5 min** | model-bound at 5 folds: ~9.7 min per fold (4.48 s/study for 5 folds on one T4) |
 | Efficiency score `AUC/(0.5−0.95) + s/32400` | 5 folds **−1.966**; 2 folds **−2.018** (public 0.925) | exp008 −1.945. The −2.0362 once reported came from a runtime projection (15.3 min) that measurement showed was ~3.5× too low |
 

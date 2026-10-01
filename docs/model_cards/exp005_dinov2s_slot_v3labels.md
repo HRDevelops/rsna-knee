@@ -17,6 +17,10 @@ Identical recipe to exp003 (5-fold GroupKFold, 25 epochs, AdamW, per-group grad 
 - gold-58 macro-AUC: **0.8815 ± 0.0055**
 - This label generation (v3) was accepted as an upgrade over v2 only after passing a pre-registered two-criterion acceptance test (must beat exp002 on BOTH the OOF-vs-original-labels metric above AND gold-58, not gold-58 alone — guards against the blend circularly overfitting to the 58-study reference it was calibrated on). Both criteria passed; see `docs/EXPERIMENTS.md` 2026-09-09.
 
+- **Public LB (inferred):** the scored ensemble submission (56273364, 0.893) was most likely exp005 alone after the T4 runtime fallback. On Kaggle's 2 × T4 the
+  3 members measure ~59 s/study (~21 h for the test set), so the notebook's time-budget ladder almost certainly
+  fell to its last rung, exp005 by itself. Not confirmed: the chosen rung is not visible for the hidden-test run.
+
 ## Limitations and biases
 - The v3 label blend was itself calibrated against gold-58 (58 studies) — while the acceptance test specifically guards against pure circularity, residual optimism relative to a truly held-out test set cannot be fully ruled out at this sample size.
 - A second blend round (v4, blending exp005's own OOF back into v3) was tested and found to **regress** performance (-0.012 macro LOO on gold-58) — label iteration was stopped at v3 for this reason (`docs/EXPERIMENTS.md` 2026-09-09). exp005 should not be re-distilled against its own output.

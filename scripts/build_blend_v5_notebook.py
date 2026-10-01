@@ -22,10 +22,16 @@ from the SCORED notebook's code cells with the minimum substitutions (asserted t
                    and the code dataset name -> `rsna-knee-code-0916` (the 2026-09-16 bytes, commit d767fdc).
 The profiling notebook additionally points each child's TEST_DIR at a fake test set of training studies.
 
+`--variant v5b` (exp005 re-gate, pre-registered 2026-10-01): the slot child is PINNED to exp005 (members filtered
+to exp005 and the degradation ladder replaced by that single rung), so the deployed slot arm is the gated arm
+deterministically instead of whatever the time-budget ladder picks. Child timeouts come from measured runtimes.
+
     python scripts/build_blend_v5_notebook.py
+    python scripts/build_blend_v5_notebook.py --variant v5b --coat-timeout-h 4 --slot-timeout-h <from profile>
 """
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
@@ -34,6 +40,13 @@ ALPHA = 0.2                      # slot weight, from the pre-registered gate (de
 PRIOR_TOL_FRAC = 0.005           # prior-fallback rows tolerated per child: 0 on the 3-row placeholder, <= 6 of 1,300
 OUT_LINE = 'OUT_PATH = Path("/kaggle/working/submission.csv")'
 TEST_LINE = 'TEST_DIR = _find_dir("/kaggle/input", "rsna-knee-abnormality-detection")'
+EXP005 = "exp005_dinov2s_slot_v3labels"
+MEMBERS_LINE = 'MEMBERS = {name: {**spec} for name, spec in loaded["members"].items()}'
+LADDER_BLOCK = """LADDER = [
+    ("no-TTA + 3 members", False, GLOBAL_MEMBERS),
+    ("no-TTA + 2 members", False, ["exp006_dinov2b_slot_v3labels", "exp005_dinov2s_slot_v3labels"]),
+    ("smallest model only", False, ["exp005_dinov2s_slot_v3labels"]),
+]"""
 
 
 def code_cells(nb: Path) -> str:
@@ -46,13 +59,19 @@ def sub1(src: str, old: str, new: str) -> str:
     return src.replace(old, new)
 
 
-def child_sources(profile: bool) -> tuple[str, str]:
+def child_sources(profile: bool, pin_exp005: bool = False) -> tuple[str, str]:
     coat = code_cells(ROOT / "notebooks/submit-exp021.ipynb")
     slot = code_cells(ROOT / "notebooks/ensamble-notebook-scored.ipynb")
     coat = sub1(coat, OUT_LINE, 'OUT_PATH = Path(os.environ["BLEND_CHILD_OUT"])')
     slot = sub1(slot, OUT_LINE, 'OUT_PATH = Path(os.environ["BLEND_CHILD_OUT"])')
     slot = sub1(slot, 'CODE_DIR = _find_dir("/kaggle/input", "rsna-knee-code")',
                 'CODE_DIR = _find_dir("/kaggle/input", "rsna-knee-code-0916")')
+    if pin_exp005:
+        slot = sub1(slot, MEMBERS_LINE, MEMBERS_LINE + f"""
+MEMBERS = {{k: v for k, v in MEMBERS.items() if k == "{EXP005}"}}   # blend v5b: slot arm PINNED to exp005 (gated arm)
+assert list(MEMBERS) == ["{EXP005}"], MEMBERS""")
+        slot = sub1(slot, LADDER_BLOCK,
+                    f"""LADDER = [("exp005 only (pinned for blend v5b)", False, ["{EXP005}"])]   # one rung: never a different model""")
     if profile:
         coat = sub1(coat, TEST_LINE, TEST_LINE + '\nTEST_DIR = Path(os.environ["BLEND_PROFILE_TEST_DIR"])')
         slot = sub1(slot, TEST_LINE, TEST_LINE + '\nTEST_DIR = Path(os.environ["BLEND_PROFILE_TEST_DIR"])')
@@ -183,7 +202,24 @@ def run_child(name: str, src: str, out_csv: Path, timeout_s: float, uids: list, 
 '''
 
 
-def parent_notebook(coat_src: str, slot_src: str) -> dict:
+def parent_notebook(coat_src: str, slot_src: str, variant: str = "v5", coat_h: float = 5.0,
+                    slot_h: float | None = None) -> dict:
+    if variant == "v5b":
+        md = f"""# Blend v5b: exp021 (0.929) + exp005, subprocess-isolated
+
+Re-gate passed (pre-registered 2026-10-01, nested CV): exp005 slot weight **alpha = {ALPHA}**, same for all 12
+labels, per-label ranks within the test batch. This notebook is CPU-only and never imports torch; each arm runs its
+scored code as a separate `python` process:
+- **CoAt child**: `submit-exp021` v1 code cells (scored 0.929), unchanged except the output path.
+- **slot child**: `ensamble-notebook` code cells with the code dataset `rsna-knee-code-0916` (the 2026-09-16
+  bytes), the members **pinned to exp005** and the time-budget ladder replaced by that single rung, so the
+  deployed arm is the gated arm deterministically.
+
+Child timeouts: CoAt {coat_h} h, slot {slot_h} h (from measured Kaggle 2 x T4 runtimes). A child still alive 180 s
+after its CSV is complete is killed and its CSV used. Fallbacks: slot fails -> exp021 output unchanged; CoAt
+fails -> slot output.
+"""
+        return _parent(md, coat_src, slot_src, coat_h, slot_h)
     md = f"""# Blend v5: exp021 (0.929) + scored slot ensemble (0.893), subprocess-isolated
 
 Offline gate passed 2026-09-26 (pre-registered, nested CV): slot weight **alpha = {ALPHA}**, same for all 12 labels,
@@ -196,6 +232,10 @@ scored code as a separate `python` process:
 A child still alive {180}s after its CSV is complete is killed and its CSV used. Each CSV is validated (rows, UIDs,
 no NaN, range, prior-fallback rows). Fallbacks: slot fails -> exp021 output unchanged; CoAt fails -> slot output.
 """
+    return _parent(md, coat_src, slot_src, None, None)
+
+
+def _parent(md: str, coat_src: str, slot_src: str, coat_h, slot_h) -> dict:
     c1 = RUNNER.replace("__ALPHA__", repr(ALPHA)).replace("__TOL__", repr(PRIOR_TOL_FRAC)) + f'''
 COAT_SRC = {coat_src!r}
 SLOT_SRC = {slot_src!r}
@@ -206,8 +246,13 @@ UIDS = list(test_df["StudyInstanceUID"])
 DEADLINE = T0 + 8.25 * 3600      # Kaggle's cap is 9 h; both children must be done by here
 print(f"{{len(UIDS)}} test studies | alpha {{ALPHA}} | torch imported in parent: {{'torch' in sys.modules}}")
 '''
-    c2 = '''coat = run_child("coat", COAT_SRC, WORK / "preds_coat.csv", min(5 * 3600, DEADLINE - time.time() - 900), UIDS)
+    if coat_h is None:   # v5: whole-run deadline only
+        c2 = '''coat = run_child("coat", COAT_SRC, WORK / "preds_coat.csv", min(5 * 3600, DEADLINE - time.time() - 900), UIDS)
 slot = run_child("slot", SLOT_SRC, WORK / "preds_slot.csv", max(600, DEADLINE - time.time() - 900), UIDS)
+'''
+    else:                # v5b: timeouts from measured runtimes, still capped by the deadline
+        c2 = f'''coat = run_child("coat", COAT_SRC, WORK / "preds_coat.csv", min({coat_h} * 3600, DEADLINE - time.time() - 900), UIDS)
+slot = run_child("slot", SLOT_SRC, WORK / "preds_slot.csv", max(600, min({slot_h} * 3600, DEADLINE - time.time() - 900)), UIDS)
 '''
     c3 = '''def _load(path):
     return pd.read_csv(path).set_index("StudyInstanceUID").loc[UIDS, TARGETS]
@@ -244,7 +289,7 @@ sub.head()
     return nb([cell("markdown", md), cell("code", c1), cell("code", c2), cell("code", c3)])
 
 
-def profile_notebook(coat_src: str, slot_src: str) -> dict:
+def profile_notebook(coat_src: str, slot_src: str, variant: str = "v5") -> dict:
     md = """# Blend v5 runtime profile (not a submission)
 
 Runs the two blend-v5 children exactly as the submission does (same scored code, same subprocess runner), each on
@@ -260,8 +305,13 @@ sdf = pd.read_csv(COMP / "train_series.csv")
 uids = sorted(sdf["StudyInstanceUID"].unique())
 SETS = {{"coat": uids[500:620], "slot": uids[620:740]}}   # disjoint from each other and from earlier profiling runs
 '''
+    if variant == "v5b":   # exp021's child was already measured (v5 profile: 5.38 s/study); profile only the pinned slot
+        md = md.replace("# Blend v5 runtime profile", "# Blend v5b runtime profile (exp005-pinned slot child only)")
+        c1 = c1.replace('SETS = {"coat": uids[500:620], "slot": uids[620:740]}', 'SETS = {"slot": uids[740:860]}')
     c2 = '''R = {}
 for name, src in (("coat", COAT_SRC), ("slot", SLOT_SRC)):
+    if name not in SETS:
+        continue
     us = SETS[name]
     d = Path("/tmp") / f"_fake_{name}"; d.mkdir(exist_ok=True)   # not under /kaggle/working: outputs must not follow the symlink
     pd.DataFrame({"StudyInstanceUID": us}).to_csv(d / "test.csv", index=False)
@@ -271,7 +321,7 @@ for name, src in (("coat", COAT_SRC), ("slot", SLOT_SRC)):
     v = run_child(name, src, WORK / f"preds_{name}.csv", 3 * 3600, us, {"BLEND_PROFILE_TEST_DIR": str(d)})
     R[name] = {"n": len(us), "minutes": v["minutes"], "s_per_study": v["minutes"] * 60 / len(us),
                "min_per_1300": v["minutes"] / len(us) * 1300, "end": v["end"], "csv": v["why"], "ok": v["ok"]}
-R["total_min_per_1300"] = R["coat"]["min_per_1300"] + R["slot"]["min_per_1300"]
+R["total_min_per_1300"] = R.get("coat", {"min_per_1300": 116.5})["min_per_1300"] + R["slot"]["min_per_1300"]  # 116.5: v5-measured exp021
 R["total_h_per_1300"] = R["total_min_per_1300"] / 60
 print(json.dumps(R, indent=1))
 (WORK / "profile_blend_v5.json").write_text(json.dumps(R, indent=1))
@@ -293,12 +343,27 @@ def nb(cells):
 
 
 def main() -> None:
-    for profile, name, build in ((False, "submit-blend-v5", parent_notebook), (True, "profile-blend-v5", profile_notebook)):
-        coat, slot = child_sources(profile)
-        for s in (coat, slot):
-            compile(s, "<child>", "exec")
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--variant", choices=["v5", "v5b"], default="v5")
+    ap.add_argument("--coat-timeout-h", type=float, default=4.0)
+    ap.add_argument("--slot-timeout-h", type=float, default=None)
+    a = ap.parse_args()
+    pin = a.variant == "v5b"
+    for profile in (False, True):
+        coat, slot = child_sources(profile, pin_exp005=pin)
+        for src in (coat, slot):
+            compile(src, "<child>", "exec")
+        if profile:
+            name, book = f"profile-blend-{a.variant}", profile_notebook(coat, slot, a.variant)
+        elif pin and a.slot_timeout_h is None:
+            print("no --slot-timeout-h yet: submission notebook not built (profile first)")
+            continue
+        else:
+            name = f"submit-blend-{a.variant}"
+            book = (parent_notebook(coat, slot, "v5b", a.coat_timeout_h, a.slot_timeout_h) if pin
+                    else parent_notebook(coat, slot))
         out = ROOT / f"notebooks/{name}.ipynb"
-        out.write_text(json.dumps(build(coat, slot), indent=1, ensure_ascii=False), encoding="utf-8")
+        out.write_text(json.dumps(book, indent=1, ensure_ascii=False), encoding="utf-8")
         print("wrote", out)
 
 

@@ -1022,6 +1022,12 @@ completed on real Kaggle hardware with zero OOM/timeout issues (the 2026-09-16 b
 Produced via `python scripts/eval_oof_lb_gap.py --lb-score 0.893`
 (`artifacts/oof_lb_gap_report.md`).
 
+> **CORRECTION (2026-10-01): the scored run was most likely exp005 alone, not the 3-member ensemble.** On Kaggle's
+> 2 × T4 the 3 members measure ~59 s/study (~21 h for the test set, 2026-09-27), so the notebook's time-budget ladder
+> almost certainly fell to rung 2 (exp005 alone). This is inferred, not confirmed: the hidden-test log is not
+> visible. The gap is then likely **0.8631 → 0.893, ≈ −0.030 (LB above OOF by +0.030)**, not −0.0186. That is
+> above the 0.02 threshold below, and in line with the larger gaps of every later probe (exp018 −0.047).
+
 **Verdict: TRUSTWORTHY — |gap| = 0.0186 < 0.02.** Per the pre-registered rule, this does NOT
 trigger the investigation gate. Proceeding to probe #2 (efficiency notebook) — no label-engine or
 fold-construction changes triggered by this result alone.
@@ -3085,3 +3091,34 @@ Run: `scripts/blend_v5_gate.py --slot-arm exp005`, with only the arm swapped.
   < 7 h with margin. Child timeouts are set from the measured numbers. Fallback: slot fails → exp021 unchanged.
 - Placeholder commit (Complete, 0 on prior, normal exit), then staged for the user's click.
 - Selection rule unchanged: swap the main pick only if public LB ≥ 0.930.
+
+## 2026-10-01 — exp005 re-gate RESULT: FAIL (criterion 2). Modeling CLOSED permanently.
+
+`scripts/blend_v5_gate.py --slot-arm exp005` (job 28913, ZEN4 CPU). Report: `artifacts/blend_v5_gate_exp005.md`.
+exp021: OOF 0.8840, gold-58 0.9111. exp005 (5-fold mean): OOF 0.8631, gold-58 0.8903.
+
+| # | Criterion | Bar | Value | |
+|---|---|---|---|---|
+| 1 | Mean per-label Spearman, exp021 vs exp005 | < 0.92 | 0.855 | PASS |
+| 2 | Cross-fitted gain over exp021 | ≥ +0.0020 | **+0.0009** | **FAIL** |
+| 3 | Paired cluster bootstrap | CI lo > 0, ≥ 95% reps > 0 | [+0.0005, +0.0012], 100% | PASS |
+| 4 | Gold-58 at deploy α | ≥ 0.9091 | 0.9093 (α 0.1) | PASS |
+| 5 | Outer-fold α IQR | ≤ 0.20 | 0.00 (all folds chose 0.1) | PASS |
+
+**α curve (full OOF, information only):** α 0.1 +0.0009 (gold-58 −0.0019), 0.2 +0.0010 (−0.0029), 0.3 +0.0004,
+0.4 −0.0007. exp005 is more diverse from exp021 than the 3-member arm (0.855 vs 0.878), but it is a weaker model. The
+gain peaks at α 0.1–0.2 at well under half the 3-member arm's +0.0024 and turns negative by 0.4. The effect is real
+(every fold positive, CI excludes 0) but below the pre-set +0.0020 bar.
+
+**Per the pre-agreed rule: no rescue, no further arms; modeling is closed permanently.** Nothing was pushed for v5b.
+`notebooks/profile-blend-v5b.ipynb` and the builder's `--variant v5b` were prepared before the result and are kept
+for the record only. Final selections are unchanged: main exp021 (56556092, 0.929), efficiency exp018 2-fold
+(56560771, 0.925). One probe remains unused.
+
+**Documentation correction (user item 3, done regardless of the gate):** the scored 0.893 is now described as "DINOv2
+slot pipeline (most likely exp005 alone after the T4 runtime fallback)", marked as inference, in README,
+METHOD_WRITEUP, the exp005/exp018 model cards, CV_PROGRESS_PRESENTATION, VIDEO_OUTLINE and SUBMISSION_FINAL. The probe
+#1 gap is corrected to ~−0.030 (0.8631 → 0.893), which exceeds the 0.02 threshold. exp008's (0.885) fold count was
+also chosen at run time and is recorded as unknown. Learning added: a runtime degradation ladder can silently change
+which model is scored; log the chosen rung, and measure on the target hardware before trusting what a score belongs
+to.
