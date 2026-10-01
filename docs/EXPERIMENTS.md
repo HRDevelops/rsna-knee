@@ -3054,3 +3054,34 @@ exp006/exp003 weights were likely never used on the hidden test.
 **Status:** workstream B stopped at the runtime requirement. There is no blend probe, and the selections are
 unchanged (main exp021 56556092, efficiency exp018 2-fold 56560771). Any further blend variant would need a new
 pre-registered gate and a user decision; nothing has been started.
+
+## 2026-10-01 — Re-gate with exp005 as the slot arm — PRE-REGISTRATION (written before any number is computed)
+
+**Decision (user, 2026-10-01).** The 2026-09-26 gate PASSED. Deployment failed on measured T4 runtime (3-member slot
+ensemble ~21 h). This is a **new pre-registered test with a different arm, not a rescue**. If it fails, modeling is
+closed permanently and no further arms are tried.
+
+**Arms (one vote each).**
+- **Slot arm = exp005** (DINOv2 ViT-S/14, `labels_v3_candidate`), the 5-fold mean. This is the model the scored
+  ensemble notebook falls back to on T4. OOF: each study's own-fold prediction. Gold-58: the mean of the 5 fold
+  models.
+- **CoAt arm = exp021**, the 10-checkpoint mean, as before.
+
+**Everything else is UNCHANGED from the 2026-09-26 pre-registration (commit 185eab7):**
+- per-label percentiles against each arm's OOF population;
+- grid α ∈ {0, 0.1, 0.2, 0.3, 0.4}, one global α;
+- nested `GroupKFold(5)` by `report_cluster_id`;
+- α rule: the smallest α within 0.0005 of the best inner gain;
+- deploy α = the rule on the full OOF;
+- the same 5 criteria: Spearman < 0.92; cross-fitted gain ≥ +0.0020; bootstrap CI lower bound > 0 and ≥ 95% of
+  reps positive; gold-58 at the deploy α ≥ 0.9091; outer α IQR ≤ 0.20.
+
+Run: `scripts/blend_v5_gate.py --slot-arm exp005`, with only the arm swapped.
+
+**If it passes:**
+- Child 2 runs exp005 **explicitly** (members pinned to exp005 only, not left to the time-budget ladder), so the
+  gated arm is the deployed arm deterministically.
+- The exp005-only child is profiled on Kaggle 2 × T4 (cold studies, same method) and the full-test total must be
+  < 7 h with margin. Child timeouts are set from the measured numbers. Fallback: slot fails → exp021 unchanged.
+- Placeholder commit (Complete, 0 on prior, normal exit), then staged for the user's click.
+- Selection rule unchanged: swap the main pick only if public LB ≥ 0.930.
