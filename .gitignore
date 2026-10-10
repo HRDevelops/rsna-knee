@@ -12,3 +12,6 @@ kaggle.json
 .claude/
 kernels/
 kaggle_staging/
+
+# figure inputs derived from competition data (labels/predictions per study): never commit
+docs/figures/_data/
