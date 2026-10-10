@@ -15,3 +15,13 @@ kaggle_staging/
 
 # figure inputs derived from competition data (labels/predictions per study): never commit
 docs/figures/_data/
+
+# LaTeX build artifacts
+docs/report/*.aux
+docs/report/*.log
+docs/report/*.bbl
+docs/report/*.blg
+docs/report/*.out
+docs/report/*.pdf
+docs/report/stress_fill.*
+docs/report/comment.cut
