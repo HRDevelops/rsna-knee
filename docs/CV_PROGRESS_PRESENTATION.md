@@ -1,144 +1,193 @@
 # CV course progress presentation — Oct 15, 5 minutes
 
 Project: RSNA Knee Abnormality Detection (Kaggle 2026): 12 findings from knee MRI, scored by macro-AUC.
-Every number below is a logged measurement from `docs/EXPERIMENTS.md`. Rewritten 2026-09-24 for the full
-four-phase arc. Timing budget: 5 slides × ~55 s ≈ 4:35, leaving ~25 s of slack.
+**Five slides, ~4:35 of speaking** (speaker notes below total ~620 words; at 135 words/min that is 4.6 min,
+leaving ~25 s of slack). Every number is a logged measurement from `docs/EXPERIMENTS.md`; the section for each
+is in the "Number sources" table at the end. Figures are in `docs/figures/` (PNG for slides, PDF for the report).
+Rewritten 2026-10-10 around the final figures and the corrected 0.893 attribution.
 
-Status when presenting: modeling and code frozen (freeze Oct 15). **One model family (exp018's CoAtNet-2
+Status when presenting: modeling is closed and the freeze is Oct 15. **One model family (exp018's CoAtNet-2
 Window-MIL) supplies both final picks:** accuracy = exp021, 10 checkpoints (public 0.929); efficiency = exp018 on
-2 folds (public 0.925, ~20 min measured). The final private-leaderboard rank is not yet known (the
-competition closes Oct 22).
+2 folds (public 0.925, ~20.5 min measured). The private-leaderboard rank is unknown until the competition closes
+(Oct 22).
 
-## Outline (what the five minutes say)
+## Three honesty points to say out loud (they change what the numbers mean)
 
-1. **Problem + the twist** (0:00–0:55): 58 real labels, 4,407 reports, no reports at test time.
-2. **Phase 1: weak supervision** (0:55–1:50): LLM label engine and a noisy-student round → `labels_v3`.
-3. **Phase 2: the DINOv2 slot model and its ceiling** (1:50–2:50): 0.893 (most likely exp005 alone), then six null ablations.
-4. **Phases 3–4: audit → exp018** (2:50–3:50): what the audit found, and the window-MIL model that
-   broke the ceiling.
-5. **Results + lessons** (3:50–4:35): the final table, one model family for both tracks, and two of my
-   own conclusions that measurement overturned.
+1. **The 0.893 was most likely ONE small model, exp005, not the 3-model ensemble.** The notebook picks its
+   configuration from a time budget; the 3 models measure ~59 s/study on Kaggle's T4s (~21 h), so it almost
+   certainly fell back to exp005 alone. Inferred, not confirmed (the hidden-test log is not visible).
+2. **The 0.893 -> 0.929 jump bundled four changes** (backbone family, window input, 140 mm FOV, corrected
+   laterality). No ablation separates them, so the talk does not credit any one of them.
+3. **Gold-58 is n = 58** (95% CI about +/-0.03 on the macro-AUC), and **OOF is scored against noisy report-derived
+   labels.** The leaderboard is the only clean external number, and it is the public split only.
 
-## Slide 1 — The problem: strong images, weak labels
+## Slide plan at a glance
 
-**On the slide**
-- Input: a knee MRI study is 3–14 series (sagittal / coronal / axial, fat-suppressed or not), with
-  20–45 slices each.
-- Output: 12 probabilities (ACL, MCL, medial/lateral meniscus, 3 OA compartments, effusion, synovitis,
-  Baker's cyst, contusion, fracture). Score = macro ROC-AUC.
-- The catch (a bar graphic): 4,407 training studies → **58 with true labels**, **4,407 with a free-text
-  report** (12+ languages), **0 reports at test time**. Reports agree with the experts only ~82% of the
-  time, because they over-call mild disease.
+| # | Slide | Time | Figure |
+|---|---|---|---|
+| 1 | The problem: strong images, weak labels, and the label engine | 0:00-0:50 | none (build a 3-bar graphic: 4,407 / 58 / 0) |
+| 2 | The path and the plateau | 0:50-1:45 | `ablation_path_and_nulls.png` |
+| 3 | Diagnosis and the formulation change | 1:45-2:45 | `formulation_before_after.png` |
+| 4 | What the model looks at | 2:45-3:35 | `attention_windows_gold58_slide.png` |
+| 5 | Results and lessons | 3:35-4:35 | table + `roc_gold58_exp018_exp021.png` |
 
-**Say (≈55 s):** "Most of the labels I'd need don't exist. What I have is text: radiology reports in a
-dozen languages that mostly, but systematically not always, agree with what the expert panel called
-positive. So it starts as a label-quality problem."
-
-## Slide 2 — Phase 1: weak supervision via LLM report labelling
-
-**On the slide** (flow diagram)
-- Report → two open LLMs (Qwen2.5-72B, Llama-3.3-70B; the rubric encodes "mild / on-the-fence =
-  negative") → per-finding probability → calibrated on the 58 gold studies (leave-one-out) → `v2` soft
-  labels.
-- Noisy-student round: blend the labels with the image model's own out-of-fold predictions → **`v3`**.
-  A second round (`v4`) **regressed**, so I stopped.
-- Guardrails: folds grouped by report cluster (near-duplicate reports never split across folds); the
-  gold-58 studies are never trained on.
-- Gain from better labels alone: **+0.014 OOF macro**, same architecture.
-
-**Say (≈55 s):** "Two LLMs read every report against a rubric of the experts' thresholds. I calibrate
-against the 58 real labels, let the image model clean the labels once, and stop there because a second
-round made it worse."
-
-## Slide 3 — Phase 2: the DINOv2 2.5D slot model, and a ceiling
+## Slide 1 — The problem: strong images, weak labels (0:00-0:50)
 
 **On the slide**
-- Architecture: DINOv2 ViT slice encoder → transformer across slices → one CLS token per series →
-  **6 slots** {sag, cor, ax} × {fluid-sensitive or not} → cross-slot transformer → 12 per-finding
-  attention queries.
-- Progress (OOF macro vs proxy labels): ViT-S **0.849** → ViT-B **0.854** → + v3 labels **0.868** →
-  3-model ensemble **0.874**. **Public LB 0.893** for the DINOv2 slot pipeline (most likely exp005 alone after the T4 runtime fallback), with a distilled
-  efficiency model at 0.885.
-- Then **six bootstrap-tested ablations, all null** (noise SD ≈ 0.004, bar +0.0082):
+- Input: a knee MRI study = 3-14 series (sagittal / coronal / axial, fat-suppressed or not). Output: 12
+  probabilities. Score = macro ROC-AUC.
+- Bar graphic: **4,407** training studies -> **58** with expert image-review labels, **4,407** with a free-text
+  report (12+ languages), **0** reports at test time. Reports agree with the experts only ~82% of the time.
+- Label engine: two open LLMs (Qwen2.5-72B, Llama-3.3-70B) read each report against a rubric of the experts'
+  thresholds -> calibrated on the 58 (leave-one-out) -> one noisy-student round -> `v3` labels. A second round
+  regressed, so I stopped.
 
-  | Ablation | Δ OOF |
-  |---|---|
-  | 448 px | −0.0001 |
-  | 32 slices | −0.0001 |
-  | ACL head init | +0.0010 |
-  | report-text auxiliary loss ×2 | +0.0036 / +0.0012 |
-  | 6-model re-selected ensemble | +0.0020 |
+**Say (~115 words)**
+"I predict twelve knee-MRI findings, scored by macro AUC. The catch is the labels. Of 4,407 training studies, only
+58 have expert image-review labels. Every study has a radiology report, in a dozen languages, but there are no
+reports at test time, and the reports agree with the experts only about 82% of the time, because they over-call
+mild disease. So step one was a label engine. Two open language models read each report against a rubric of the
+experts' thresholds. I calibrate on the 58 real labels, let the image model clean the labels once, and stop there,
+because a second round made things worse. Better labels alone were worth about plus 0.014 AUC."
 
-  ConvNeXt-V2 was redundant (corr 0.93); a 3D ResNet was killed.
+## Slide 2 — The path and the plateau (0:50-1:45)
 
-**Say (≈60 s):** "This model family got me to 0.893. (On Kaggle's T4s the notebook's time budget almost certainly
-dropped it to its smallest member, exp005, so that score is one ViT-S model.) Then I tested every remaining lever properly, with
-pre-registered bars, the same folds and bootstrap noise, and all of them were null. At the time I
-concluded the ceiling was the labels. That turned out to be wrong."
-
-## Slide 4 — Phases 3–4: the audit, and exp018
+**Figure:** `docs/figures/ablation_path_and_nulls.png` (panel A the leaderboard path, panel B the tested changes).
 
 **On the slide**
-- **Audit** (18 public kernels, plus my own cache audit):
-  - A public 20-model DINOv2 ensemble also stalls at 0.891, so the ceiling is the *model family*.
-  - One single CoAtNet-2 with attention over slice windows reaches 0.924.
-  - Things I had never varied: my crop was **115 mm** vs the public 130–140 mm, and every finding
-    only ever saw a per-series summary.
-  - My own audit found a laterality defect: sagittal right knees were flipped front-to-back rather
-    than medial-lateral, and 34% of studies had no side normalization. A geometric rule fixed it,
-    with 99% agreement.
-- **exp018** (diagram): 140 mm, 336 px → windows of 3 adjacent slices as RGB (≤54 per study) →
-  fully fine-tuned CoAtNet-2 → **per-finding attention over all windows** (no series bottleneck).
-  My labels, my folds, pre-registered kill rule.
+- A: public DINOv2-S baseline notebook 0.809 (third-party, the starting point, **not my submission**) -> my
+  DINOv2 slot pipeline **0.893** -> Window-MIL **0.929**. Public top ~0.95-0.96 at the time.
+- B: each change as a paired OOF delta with its 95% interval. Resolution, slice count, head initialisation and a
+  report-text auxiliary loss all sit inside noise (or below the pre-registered +0.0082 bar). Hollow = null.
+- Early gains that did work (OOF): ViT-S -> ViT-B +0.005, v3 labels +0.014, ensembling +0.006.
 
-**Say (≈60 s):** "Instead of another ablation, I looked at what everyone else was doing. The DINOv2
-family was stuck everywhere, and one very different design wasn't. I re-implemented it on my own labels
-with a pre-registered kill rule, and fixed a laterality bug I found along the way. I changed several
-things at once, so I can't tell you which one mattered: that's the honest caveat."
+**Say (~120 words)**
+"My first image model summarizes each series into one token and then mixes six slots. It scored 0.893 on the
+public leaderboard. One correction: that notebook picks its configuration from a time budget, and on Kaggle's T4
+GPUs the three-model ensemble would take about 21 hours, so it almost certainly ran just its smallest model. The
+0.893 is most likely one ViT-S, though I can't confirm that. Then I tried every lever I had: higher resolution,
+more slices, a better head, a report-text loss, bigger ensembles. I set the bar in advance and used the same folds
+and bootstrap noise. Nothing cleared it. From that I concluded the labels were the ceiling. That conclusion
+turned out to be wrong."
 
-## Slide 5 — Results + lessons
+## Slide 3 — Diagnosis, and the formulation change (1:45-2:45)
 
-| | OOF | Gold-58 | Public LB | Runtime (T4 × 2) |
+**Figure:** `docs/figures/formulation_before_after.png`.
+
+**On the slide**
+- Audit of 18 public kernels: a public 20-model DINOv2 ensemble also stalls at **0.891**, so the ceiling belonged
+  to the model family. One single CoAtNet-2 with attention over slice windows scored **0.924**.
+- My own audit found a laterality defect: sagittal right knees were mirrored front-to-back instead of
+  medial-lateral, and 34% of studies (1,491) had no side normalisation. A geometric rule resolved 99.4% of them
+  (99% agreement with validated sides).
+- exp018: 140 mm FOV -> windows of 3 adjacent slices -> fully fine-tuned CoAtNet-2 -> **per-finding attention
+  over all windows**. My labels, my folds, a pre-registered kill rule. **Public 0.929.**
+- Caveat on the slide: four things changed together; none is isolated.
+
+**Say (~125 words)**
+"Instead of another ablation, I looked outside my own pipeline. The DINOv2 family was stuck at about 0.89
+everywhere, including in a public 20-model ensemble, and one very different design wasn't. Mine compresses every
+series to a single vector before any finding is considered. The other keeps every window of three adjacent slices
+and lets each finding attend over all of them. I rebuilt it on my own labels and folds with a pre-registered kill
+rule, and fixed a laterality bug I found along the way. It scored 0.929. I changed four things at once, so I can't
+tell you which one mattered. Putting a DINOv2 backbone inside the same window pipeline scored lower, which
+suggests the pipeline matters more than the backbone."
+
+## Slide 4 — What the model looks at (2:45-3:35)
+
+**Figure:** `docs/figures/attention_windows_gold58_slide.png` (three rows; the full six-row version and the
+all-58-studies slot-share heatmap `attention_by_slot_gold58.png` are for the report and for questions).
+
+**On the slide**
+- For each finding, the four most-attended windows and the attention over all windows (exp021, mean of 10
+  checkpoints). ACL attends to sagittal fat-suppressed slices, medial meniscus to coronal, Baker's cyst to axial.
+- How the studies were chosen: **a fixed rule, before any map was viewed**: the most confidently detected
+  gold-positive study per finding. This is a best case, not a hit rate. The three rows shown are a presentation
+  choice, picked to cover three planes.
+- The unselected view (all 58 gold studies): ACL puts **62%** of its attention on sagittal FS slices (30% would be
+  uniform); Baker's puts **45%** on axial (20% uniform); effusion 57% sagittal FS. Attention is broad: the top 4
+  windows hold only 22-48% in these examples, and a finding pools over roughly 16-40 effective windows.
+
+**Say (~115 words)**
+"Because each finding pools over windows, I can look at where it looks. These three studies were chosen by a
+rule I fixed before I saw any map: the most confident gold-positive case per finding. So this is a best case,
+not a hit rate. The ACL pools mostly from sagittal fat-suppressed slices, the medial meniscus from coronal, and
+the Baker's cyst from axial, the planes where those findings are usually assessed. Across all 58 gold studies
+the ACL puts 62% of its attention on sagittal fat-suppressed slices, against 30% if it were uniform. This shows
+where the pooling draws from. It's not proof of localization, and no radiologist has checked these windows."
+
+## Slide 5 — Results and lessons (3:35-4:35)
+
+**Figure:** `docs/figures/roc_gold58_exp018_exp021.png` (right half of the slide; if it is too dense, move it to a
+backup and keep the table + lessons). The OOF version is `roc_oof_exp018_exp021.png`.
+
+| | OOF | Gold-58 (fold-ens.) | Public LB | Runtime, Kaggle 2 x T4 |
 |---|---|---|---|---|
-| DINOv2 slot pipeline (most likely exp005 alone after the T4 runtime fallback) | 0.8631 (exp005) | 0.8903 | 0.893 | 3 members: ~21 h measured; exp005 rung: shorter |
-| DINOv2 distilled (old efficiency pick) | 0.8708 | 0.888 | 0.885 | minutes |
-| **exp021: CoAtNet-2 Window-MIL, 2 seeds × 5 folds (final, accuracy)** | **0.8840** | **0.9111** | **0.929** | ~100 min |
-| **exp018 on 2 folds (final, efficiency)** | — | 0.9078 | **0.925** | **~20 min (measured)** |
-| exp018, 5 folds | 0.8816 | 0.9091 | 0.929 | ~53 min (measured) |
-| Leaderboard top, for scale | — | — | ~0.95–0.96 | — |
+| DINOv2 slot pipeline (most likely exp005 alone, T4 fallback) | 0.8631 | 0.8903 | 0.893 | 3 members ~21 h measured; exp005 alone ~3 h (projected by cost ratio) |
+| DINOv2 distilled, efficiency probe (fold count unknown) | 0.8708 | 0.888 | 0.885 | minutes |
+| exp018, 5 folds | 0.8816 | 0.9091 | 0.929 | ~53 min |
+| **exp021, 10 checkpoints (final, accuracy)** | **0.8840** | **0.9111** [0.883, 0.936] | **0.929** | ~100 min |
+| **exp018, 2 folds (final, efficiency)** | n/a | 0.9078 | **0.925** | **~20.5 min** (score -2.018 vs -1.966 for 5 folds) |
 
-- **+0.036 LB** from one model family.
-- **Efficiency needed a real measurement.** I had projected 15 min from H100 timing; on Kaggle's own T4s the
-  5-fold run takes ~53 min and is model-bound. Cutting to 2 folds brings it to ~20 min for 0.004 AUC, which
-  wins the efficiency formula (−2.018 vs −1.966).
-- The LB beat OOF every time, because OOF is scored against noisy report labels.
-- Lessons:
-  - A run of null ablations tells you *that* family is saturated, not what the ceiling is.
-  - Survey outside your own pipeline before concluding "label ceiling".
-  - Measure runtime on the target hardware; a borrowed speed factor was off by 3.6× (CoAtNet) and ~13× (DINOv2).
-  - A runtime fallback ladder can silently change which model gets scored: log the chosen rung.
+- The leaderboard beat OOF every time: by about **+0.030** for the slot pipeline (corrected), **+0.047** for
+  exp018. OOF is scored against noisy report labels; ACL is the clearest case (OOF 0.857, gold-58 0.979).
+- Weakest on gold-58: PF OA 0.824, lateral OA 0.828, lateral meniscus 0.834. Strongest: medial meniscus and
+  Baker's 0.986, ACL 0.979, effusion 0.978. (n = 58, wide intervals.)
+- Lessons: (1) a run of null ablations shows a model *family* is saturated, not where the ceiling is; (2) measure
+  runtime on the target hardware, because my borrowed speed factors were off by 3.6x (CoAtNet) and ~13x (DINOv2);
+  (3) **a runtime fallback can silently change which model is scored**, so log the rung that was chosen.
 
-**Say (≈45 s):** "One model family does both jobs: ten checkpoints for accuracy, two for speed. Two lessons:
-six null results proved my model family was saturated, not that the problem was; and a runtime I had projected
-at 15 minutes measured 53 on the real hardware. Next is open-sourcing code, weights and the write-up."
+**Say (~150 words)**
+"One model family does both jobs: ten checkpoints for accuracy, public 0.929, and two folds for speed, 0.925 in
+about twenty minutes. The leaderboard beat my validation score every time, because I validate against noisy
+report labels. The ACL is the clearest case: 0.857 out-of-fold but 0.979 on the 58 real labels. Those 58 are
+a tiny set, so read the per-label curves as a sketch. Three lessons. First, six null results told me my model
+family was saturated, not that the problem was. Second, measure runtime on the real hardware: I projected fifteen
+minutes and got fifty-three, and a speed factor for the DINOv2 models was off by thirteen times. Third, a runtime
+fallback can silently change which model you're scoring, which is why my 0.893 is probably a single small model.
+Log the choice. The final rank is known on October 22; code, weights and a write-up follow."
 
 ## Likely questions (prep)
 
-- *Why not train directly on the 58 labels?* Too few; they are used for calibration and validation
-  only.
-- *Which change in exp018 made the difference?* Unknown: backbone, windows vs slots, 140 mm FOV and
-  laterality all changed together, and no ablation separates them. The per-label pattern (MCL +0.080,
-  lateral meniscus +0.031) hints at laterality and the wider FOV, but that is a hint, not a result.
-- *Isn't exp018 just a copy of a public notebook?* It is the same design, re-implemented, trained on my
-  own labels and folds, with no third-party weights or labels, and epoch selection that never used the
-  gold set (the reference selected on it).
-- *How do you know OOF gains aren't leakage?* Folds are grouped by report cluster, and the LB *beat* OOF
+- *Which change in exp018 made the difference?* Unknown: backbone, windows vs slots, 140 mm FOV and laterality all
+  changed together. The per-label pattern (MCL +0.080, lateral meniscus +0.031 OOF) hints at laterality and the
+  wider FOV, but that is a hint, not a result. DINOv2-B inside the window pipeline (exp022) got OOF 0.8709 vs
+  0.8816, so the backbone is not the whole story.
+- *Does the attention show it finds the lesion?* Not shown. It shows which windows each finding pools from, and
+  it is broad (a finding pools over ~16-40 effective windows). The six studies were chosen by confidence, not
+  by whether the map looked right, but no radiologist has reviewed them.
+- *Why is ACL's OOF so low but its gold-58 so high?* The OOF labels come from reports, which over-call mild ACL
+  findings; on the 58 image-review labels the same model scores 0.979. The ACL work stopped for that reason.
+- *Why not train on the 58 labels?* Too few; they calibrate the label engine and validate.
+- *Isn't exp018 a copy of a public notebook?* It is the same design (acknowledged in the write-up),
+  re-implemented and trained on my own labels and folds, with no third-party weights or labels, and epoch
+  selection that never used the gold set (the reference selected on it).
+- *How do you know OOF is not leaking?* Folds are grouped by report cluster, and the leaderboard *beat* OOF
   (leakage would push the other way).
-- *Did you ensemble exp018 with the old model?* I tried a blend. It hung on Kaggle's runner twice and
-  never scored, so I dropped it.
+- *Did you blend with the older model?* The blend never scored: two Kaggle runs hung at teardown. A later offline
+  test passed on OOF with the 3-model ensemble but that ensemble needs ~21 h on T4; with the single small model it
+  fell below the pre-set bar (+0.0009 vs +0.0020), so it was closed.
+
+## Number sources (all in `docs/EXPERIMENTS.md` unless noted)
+
+| Number | Where |
+|---|---|
+| 4,407 / 58 / ~82% report-gold agreement; labels v3 +0.014 OOF; v4 regressed | CONSOLIDATED ABLATION LEDGER (2026-09-21), sections A and B; `CLAUDE.md` section 2 |
+| 0.809 public baseline (third-party notebook) | `CLAUDE.md` section 5 |
+| 0.893 = DINOv2 slot pipeline, most likely exp005 alone; OOF 0.8631 (3-member 0.8744); ~59 s/study, ~21 h | 2026-09-27 and 2026-10-01 entries |
+| Null ablations and their intervals | Ledger section C and D; 2026-09-20 results block |
+| Public audit (18 kernels, 0.891 / 0.924); laterality defect (34%, 1,491 studies, 99.4%) | 2026-09-21 audit and exp018 pre-registration entries |
+| exp018 OOF 0.8816, gold-58 0.9091; exp021 OOF 0.8840 (+0.0024 [+0.0014, +0.0033]), gold-58 0.9111 [0.8834, 0.9359] | 2026-09-21 exp018 result; 2026-09-25 exp021 result |
+| exp018 2-fold 0.925, ~20.5 min, efficiency -2.018 vs -1.966 | 2026-09-26 probes #5/#6 and efficiency entries |
+| exp022 OOF 0.8709 (gate FAIL) | 2026-09-26, section B |
+| exp005 re-gate +0.0009 vs +0.0020 bar | 2026-10-01 re-gate result |
+| Attention shares (62% / 45% / 57%), effective windows | `docs/figures/attention_slot_mass_gold58.csv` (`scripts/fig_attention.py`) |
+| Per-label AUCs (gold-58, OOF) | printed on `roc_gold58_exp018_exp021.png`, `roc_oof_exp018_exp021.png` |
 
 ## Items to verify before Oct 15
 
-- exp018/exp021 runtimes are MEASURED on Kaggle's 2 × T4 machine on 150 training studies and extrapolated to
-  ~1,300; the old DINOv2 ensemble's ~62 min is still an H100 projection. Say "projected" for that one.
-- The final selection state and any private-LB result, if published before Oct 15.
+- The exp018/exp021 runtimes were measured on Kaggle's 2 x T4 on 120-150 training studies and extrapolated to
+  ~1,300 studies.
+- The attention figures contain real training MRI slices from the competition data. Check the competition's data
+  terms before showing them outside the course (and before the repo is made public).
+- Whether any private-leaderboard information is published before Oct 15.
