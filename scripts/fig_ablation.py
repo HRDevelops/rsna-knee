@@ -91,8 +91,9 @@ def panel_a(ax) -> None:
     ax.set_title("A  Public leaderboard path", loc="left", fontweight="bold")
     ax.annotate("", xy=(0.929, ys[3] + 0.3), xytext=(0.893, ys[2] - 0.3),
                 arrowprops=dict(arrowstyle="->", color=fc.C["black"], lw=0.8))
-    ax.text(0.915, (ys[2] + ys[3]) / 2 + 0.1, "+0.036\nwindow-MIL pipeline\n(changes bundled)", fontsize=5.8,
-            va="center", ha="left", fontweight="bold")
+    # Kept inside panel A's axes, to the LEFT of the arrow (the old right-hand placement ran into panel B's labels).
+    ax.text(0.835, (ys[2] + ys[3]) / 2 - 0.25, "+0.036\n(bundled change)", fontsize=5.8, va="center", ha="center",
+            fontweight="bold")
     ax.grid(axis="x", color=fc.C["light"], lw=0.4)
     ax.set_axisbelow(True)
 
@@ -135,7 +136,7 @@ def main() -> None:
     gs = fig.add_gridspec(1, 2, width_ratios=[1.0, 1.35], wspace=1.05)
     panel_a(fig.add_subplot(gs[0]))
     panel_b(fig.add_subplot(gs[1]))
-    fig.text(0.0, -0.035, "Hollow = null or rejected, filled green diamond = adopted, red = significantly negative. "
+    fig.text(0.0, -0.035, "Hollow = null or rejected, filled green diamond = adopted, orange = significantly negative. "
              "No CI drawn where none was computed.",
              fontsize=5.8, color=fc.C["grey"], ha="left")
     fc.save(fig, "ablation_path_and_nulls")

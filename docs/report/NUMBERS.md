@@ -66,8 +66,9 @@ except the two flagged rows.
 
 ## Known soft spots to resolve before submission
 
-- The "Qiu et al. 2024, Nat Commun" benchmark has no entry in `refs.bib` (title/DOI never recorded). Add or drop it.
-- All `refs.bib` entries were written from memory: verify each.
+- `refs.bib`: the Qiu et al. 2024 entry was checked against Crossref on 2026-10-11 (DOI 10.1038/s41467-024-51888-4,
+  volume 15, article 7637, nine authors). The other entries were written from memory and have been read through by a
+  reviewer, but check each against the source before submission.
 - The 0.893 -> exp005 attribution is an inference; keep the wording "most likely".
 - The attention-extraction predictions reproduce exp021's stored gold-58 predictions for 56 of 58 studies to < 0.005;
   two studies differ (max 0.21, on MCL/ACL). The likely cause is the deployed side-resolution rule (tag/geometry)

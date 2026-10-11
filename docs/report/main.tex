@@ -84,8 +84,10 @@ CoAtNet~\cite{dai2021coatnet} via timm~\cite{wightman2019timm}.}
 \item \nt{The window-MIL design follows a public Kaggle kernel~\cite{dread2026kernel}; say so plainly (re-implemented, own
 labels and folds, no third-party weights or labels).}
 \item \nt{LLM tooling: Qwen2.5~\cite{qwen2025}, Llama~3~\cite{llama3}, vLLM~\cite{kwon2023vllm}.}
-\item \todo{add the external published benchmark noted in EXPERIMENTS.md 2026-09-17 (``Qiu et al. 2024, Nat Commun''):
-its title and DOI are not recorded in the repo.}
+\item \nt{Closest prior work: Qiu et al.~\cite{qiu2024coplane} (Nature Communications 2024) learn co-plane attention across
+MRI sequences for the same twelve knee abnormalities. State the difference plainly: their supervision and data versus
+this challenge's 58 image-review labels plus report-derived labels; compare per-finding AUCs only as context, not as a
+like-for-like benchmark (the EXPERIMENTS.md 2026-09-17 entry has the per-label comparison that was made).}
 \end{itemize}
 \end{notes}
 
@@ -353,6 +355,11 @@ silently wrote label priors; tests must assert on prediction content, not row co
 by a clinician; the 0.893 attribution to exp005 is an inference.}
 \item \nt{Label-engine calibration used the same 58 studies that report gold-58 AUC (leave-one-out for the labeler; the image
 models never trained on them), so the labeler's own agreement numbers are optimistic.}
+\item \nt{Reproduction check, one sentence: re-running the 10 exp021 checkpoints through the deployed inference path on the
+gold-58 studies reproduces the stored predictions to within 0.005 for 56 of 58 studies, but two studies differ by up to
+0.21 (MCL, ACL). The suspected cause is a difference between the side-resolution rule used in training (validated report
+side) and at deployment (DICOM tag, then geometry); this is unconfirmed. The effect on macro-AUC is negligible (0.9104
+vs 0.9111).}  % SRC: scripts/fig_attention.py sanity line; docs/report/NUMBERS.md
 \item \nt{No external data; single-person project; Kaggle hardware only for inference.}
 \end{itemize}
 \end{notes}
