@@ -132,6 +132,10 @@ def panel_b(ax) -> None:
 
 def main() -> None:
     fc.set_style()
+    progress = "--progress" in sys.argv     # progress-update deck variant: "current best" instead of "final" (same numbers)
+    if progress:
+        PATH[4] = (PATH[4][0].replace("final, main track", "current best, main track"),) + PATH[4][1:]
+        PATH[5] = (PATH[5][0].replace("final, efficiency track", "current best, efficiency"),) + PATH[5][1:]
     fig = plt.figure(figsize=(7.16, 4.7))
     gs = fig.add_gridspec(1, 2, width_ratios=[1.0, 1.35], wspace=1.05)
     panel_a(fig.add_subplot(gs[0]))
@@ -139,7 +143,7 @@ def main() -> None:
     fig.text(0.0, -0.035, "Hollow = null or rejected, filled green diamond = adopted, orange = significantly negative. "
              "No CI drawn where none was computed.",
              fontsize=5.8, color=fc.C["grey"], ha="left")
-    fc.save(fig, "ablation_path_and_nulls")
+    fc.save(fig, "ablation_path_and_nulls_progress" if progress else "ablation_path_and_nulls")
     plt.close(fig)
 
 
