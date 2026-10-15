@@ -12,11 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Build the course progress presentation (5 slides + 1 backup, 16:9, speaker notes) from docs/figures/.
+"""Build the course progress presentation: exactly the five slides the instructor specified (max 5 minutes), 16:9,
+with speaker notes. Slide order and required content:
 
-Framing: a progress update ("so far", "current best", "what is left"). Every statement is true as of the build date;
-nothing claims an experiment is running or a result is pending when it is not. Numbers are the ones in
-docs/CV_PROGRESS_PRESENTATION.md (sources listed there).
+  1 Introduction   project title, expected output / application, a figure of the system
+  2 Dataset        name + URL, size (samples AND storage), input format
+  3 Baseline model GitHub / code link, pretrained-model URL, baseline performance
+  4 Method         existing implementation vs my modifications, evaluation metrics, preliminary results
+  5 Plan           next steps and planned improvements
+
+Every fact on the slides is sourced in docs/CV_PROGRESS_PRESENTATION.md. Nothing claims an experiment is running or a
+result is pending when it is not.
 
     python scripts/build_progress_deck.py        # -> docs/presentation/progress_presentation.pptx
 """
@@ -29,7 +35,7 @@ from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
-from pptx.util import Emu, Inches, Pt
+from pptx.util import Inches, Pt
 
 ROOT = Path(__file__).resolve().parent.parent
 FIG = ROOT / "docs/figures"
@@ -41,10 +47,17 @@ WHITE = RGBColor(0xFF, 0xFF, 0xFF)
 FONT = "Calibri"
 W, H = 13.333, 7.5
 
+URL_COMP = "https://www.kaggle.com/competitions/rsna-knee-abnormality-detection"
+URL_INFER = "https://www.kaggle.com/code/dreaddevelopment/knee-mri-twelve-findings-from-a-single-model"
+URL_TRAIN = "https://www.kaggle.com/code/dreaddevelopment/knee-mri-training-the-twelve-finding-model"
+URL_WEIGHTS = "https://www.kaggle.com/datasets/dreaddevelopment/raptor-knee-widedense"
+URL_TIMM_HF = "https://huggingface.co/timm/coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k"
+URL_TIMM_GH = "https://github.com/huggingface/pytorch-image-models"
+URL_MINE = "https://github.com/HRDevelops/rsna-knee"
 
-def tb(slide, x, y, w, h, paras, size=18, color=INK, bold=False, align=PP_ALIGN.LEFT, anchor=MSO_ANCHOR.TOP,
-       spacing=1.1):
-    """Text box. paras: list of str or (str, dict(size=, color=, bold=, bullet=)) items."""
+
+def tb(slide, x, y, w, h, paras, size=18, color=INK, bold=False, align=PP_ALIGN.LEFT, anchor=MSO_ANCHOR.TOP, spacing=1.05):
+    """Text box. paras: list of str or (str, opts) with opts: size, color, bold, bullet, after, link, font."""
     box = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
     tf = box.text_frame
     tf.word_wrap = True
@@ -58,43 +71,37 @@ def tb(slide, x, y, w, h, paras, size=18, color=INK, bold=False, align=PP_ALIGN.
         first = False
         para.alignment = align
         para.line_spacing = spacing
-        para.space_after = Pt(o.get("after", 6))
-        bullet = o.get("bullet", False)
+        para.space_after = Pt(o.get("after", 5))
         run = para.add_run()
-        run.text = ("•  " + text) if bullet else text
+        run.text = ("•  " + text) if o.get("bullet") else text
         f = run.font
-        f.name, f.size = FONT, Pt(o.get("size", size))
+        f.name, f.size = o.get("font", FONT), Pt(o.get("size", size))
         f.bold, f.color.rgb = o.get("bold", bold), o.get("color", color)
+        if o.get("link"):
+            run.hyperlink.address = o["link"]
     return box
 
 
-def rect(slide, x, y, w, h, fill, line=None, shape=MSO_SHAPE.RECTANGLE):
-    s = slide.shapes.add_shape(shape, Inches(x), Inches(y), Inches(w), Inches(h))
+def rect(slide, x, y, w, h, fill, line=None):
+    s = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(x), Inches(y), Inches(w), Inches(h))
     s.fill.solid()
     s.fill.fore_color.rgb = fill
     if line is None:
         s.line.fill.background()
     else:
         s.line.color.rgb = line
-        s.line.width = Pt(1.25)
     s.shadow.inherit = False
     return s
 
 
-def base(prs, title, kicker, notes, n):
-    slide = prs.slides.add_slide(prs.slide_layouts[6])
-    rect(slide, 0, 0, W, 0.12, BLUE)
-    tb(slide, 0.55, 0.28, 12.2, 0.35, [kicker.upper()], size=12, color=GREY, bold=True)
-    tb(slide, 0.55, 0.58, 12.2, 0.9, [title], size=30, bold=True, anchor=MSO_ANCHOR.TOP)
-    tb(slide, 0.55, 7.08, 9, 0.3, ["Progress update · RSNA Knee Abnormality Detection 2026 · Husnain Rasool"], size=10,
-       color=GREY)
-    tb(slide, 12.2, 7.08, 0.6, 0.3, [str(n)], size=10, color=GREY, align=PP_ALIGN.RIGHT)
-    slide.notes_slide.notes_text_frame.text = notes
-    return slide
+def card(slide, x, y, w, h, head, paras, color, size=13):
+    rect(slide, x, y, w, h, LIGHT)
+    rect(slide, x, y, 0.07, h, color)
+    tb(slide, x + 0.2, y + 0.08, w - 0.3, 0.4, [head], size=15, color=color, bold=True)
+    tb(slide, x + 0.2, y + 0.5, w - 0.3, h - 0.55, paras, size=size)
 
 
 def pic(slide, name, x, y, max_w, max_h):
-    """Place a figure scaled to fit inside (max_w x max_h) inches, centred in that box."""
     path = FIG / name
     iw, ih = Image.open(path).size
     scale = min(max_w / iw, max_h / ih)
@@ -102,147 +109,156 @@ def pic(slide, name, x, y, max_w, max_h):
     slide.shapes.add_picture(str(path), Inches(x + (max_w - w) / 2), Inches(y + (max_h - h) / 2), Inches(w), Inches(h))
 
 
-def callout(slide, x, y, w, h, head, lines, color, size=14):
-    rect(slide, x, y, w, h, LIGHT)
-    rect(slide, x, y, 0.07, h, color)
-    tb(slide, x + 0.2, y + 0.1, w - 0.3, 0.4, [head], size=size + 1, color=color, bold=True)
-    tb(slide, x + 0.2, y + 0.55, w - 0.3, h - 0.6, [(t, dict(size=size, after=7)) for t in lines], size=size)
+def base(prs, n, kicker, title, notes, title_size=28):
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    rect(slide, 0, 0, W, 0.12, BLUE)
+    tb(slide, 0.55, 0.26, 12.2, 0.32, [f"{n}  ·  {kicker}".upper()], size=12, color=GREY, bold=True)
+    tb(slide, 0.55, 0.55, 12.2, 0.8, [title], size=title_size, bold=True)
+    tb(slide, 0.55, 7.1, 9.5, 0.3, ["Progress presentation · RSNA Knee Abnormality Detection 2026 · Husnain Rasool"], size=10, color=GREY)
+    tb(slide, 12.2, 7.1, 0.6, 0.3, [f"{n}/5"], size=10, color=GREY, align=PP_ALIGN.RIGHT)
+    slide.notes_slide.notes_text_frame.text = notes
+    return slide
 
 
 def main() -> None:
     prs = Presentation()
     prs.slide_width, prs.slide_height = Inches(W), Inches(H)
 
-    # ------------------------------------------------------------------ 1
-    s = base(prs, "Reading 12 knee-MRI findings from only 58 real labels", "Where the project started", (
-        "I predict twelve knee-MRI findings, scored by macro AUC. The catch is the labels: of 4,407 training studies, only "
-        "58 have expert image-review labels. Every study has a radiology report, but there are none at test time, and the "
-        "reports agree with the experts only about 82% of the time, because they over-call mild disease. So I built a label "
-        "engine. Two open language models read each report against a rubric of the experts' thresholds. I calibrate on the "
-        "58 real labels, let the image model clean the labels once, and stop there, because a second round made things "
-        "worse. Better labels alone were worth about plus 0.014 AUC."), 1)
-    for i, (num, lab, col) in enumerate([("4,407", "training studies", BLUE), ("58", "with expert image-review labels", VERM),
+    # ======================================================================== 1  Introduction
+    s = base(prs, 1, "Introduction", "Weak Supervision and Window-Level Attention for Knee-MRI Abnormality Detection", (
+        "Hi, I'm Husnain. My project is on the RSNA knee MRI challenge on Kaggle. Given a knee MRI study, the system outputs twelve probabilities, one per finding: ACL, MCL, meniscus tears, arthritis, effusion and others. It uses images only and is scored by the average ROC-AUC. The application is research decision support, not a medical device. The figure shows the whole system. At the top, language models turn radiology reports into soft training labels, during training only. At the bottom is the image-only model: each study becomes windows of three adjacent slices, a CoAtNet encodes them, and each finding attends over all the windows."), title_size=24)
+    tb(s, 0.55, 1.4, 12.2, 0.4, ["RSNA Knee Abnormality Detection (Kaggle 2026)"], size=17, color=GREY)
+    card(s, 0.55, 2.0, 4.1, 2.25, "Expected output", [
+        ("For each knee-MRI study: 12 probabilities (ACL, MCL, medial / lateral meniscus, 3 OA compartments, effusion, "
+         "synovitis, Baker's cyst, contusion, fracture)", dict(size=13)),
+        ("From images only; scored by macro ROC-AUC", dict(size=13, bold=True))], BLUE)
+    card(s, 0.55, 4.45, 4.1, 2.35, "Application", [
+        ("Research decision support for knee-MRI reading; not a medical device", dict(size=13)),
+        ("Delivered as a Kaggle code competition: a notebook (GPU ≤ 9 h, no internet) in a main track and an "
+         "efficiency track", dict(size=13))], GREEN)
+    pic(s, "system_overview.png", 4.85, 1.85, 8.1, 5.1)
+
+    # ======================================================================== 2  Dataset
+    s = base(prs, 2, "Dataset", "RSNA Knee Abnormality Detection: 4,407 studies, only 58 with real labels", (
+        "The data is the RSNA Knee Abnormality Detection competition on Kaggle: 4,407 training studies, 24,371 series, about 819 thousand DICOM slices, roughly 531 gigabytes raw. The test set is hidden, about 1,300 studies. The key problem: only 58 studies have expert labels. Every study has a free-text report, but reports don't exist at test time. I preprocess each study into a 64 by 336 by 336 tensor, 32 gigabytes in total, then into up to 54 windows of three slices at 384 pixels. That is what the model sees."))
+    card(s, 0.55, 1.45, 7.9, 1.4, "Name & URL", [
+        ("RSNA Knee Abnormality Detection (Kaggle competition, 2026)", dict(size=14, bold=True)),
+        (URL_COMP, dict(size=13, color=BLUE, link=URL_COMP))], BLUE)
+    card(s, 0.55, 2.98, 7.9, 1.65, "Size", [
+        ("4,407 training studies (samples) · 24,371 series · 819,078 DICOM slices", dict(size=14, bold=True)),
+        ("Storage: ≈ 531 GB raw; my preprocessed cache 31.8 GB (4,407 × 7.2 MB)", dict(size=13)),
+        ("Test set: ~1,300 hidden studies (images only)", dict(size=13, color=GREY))], VERM)
+    card(s, 0.55, 4.76, 7.9, 2.25, "Input format", [
+        ("Raw: one DICOM file per slice; a study = 3–14 series; 11–320 slices per series (median 30); mostly 512×512 (221 sizes)",
+         dict(size=12)),
+        ("Cache per study: (64, 336, 336) uint8", dict(size=13, bold=True, font="Consolas")),
+        ("Model input per study: (K ≤ 54, 3, 384, 384)", dict(size=13, bold=True, font="Consolas")),
+        ("Target: 12 values per study", dict(size=13, bold=True, font="Consolas"))], GREEN)
+    for i, (num, lab, col) in enumerate([("4,407", "studies, each with a free-text report", BLUE),
+                                         ("58", "with expert image-review labels", VERM),
                                          ("0", "reports available at test time", INK)]):
-        y = 1.75 + i * 1.65
-        rect(s, 0.55, y, 4.6, 1.45, LIGHT)
-        rect(s, 0.55, y, 0.08, 1.45, col)
-        tb(s, 0.85, y + 0.12, 4.2, 0.8, [num], size=44, color=col, bold=True)
-        tb(s, 0.85, y + 0.9, 4.2, 0.45, [lab], size=16, color=GREY)
-    tb(s, 5.6, 1.7, 7.2, 0.4, ["Label engine (done)"], size=20, color=BLUE, bold=True)
-    tb(s, 5.6, 2.2, 7.2, 4.6, [
-        ("Two open LLMs (Qwen2.5-72B, Llama-3.3-70B) read each report against a rubric of the experts' thresholds", dict(bullet=True)),
-        ("Calibrated on the 58 real labels with leave-one-out, so the labeler is never scored on its own tuning data", dict(bullet=True)),
-        ("One noisy-student round: blend with the image model's own out-of-fold predictions → v3 labels", dict(bullet=True)),
-        ("A second round regressed, so I stopped", dict(bullet=True)),
-        ("Reports and experts agree only ~82%: reports over-call mild disease", dict(bullet=True, color=GREY)),
-        ("Better labels alone: +0.014 AUC at a fixed architecture", dict(bullet=True, bold=True)),
-    ], size=18)
+        y = 1.45 + i * 1.86
+        rect(s, 8.75, y, 4.05, 1.7, LIGHT)
+        rect(s, 8.75, y, 0.08, 1.7, col)
+        tb(s, 9.05, y + 0.1, 3.6, 0.85, [num], size=44, color=col, bold=True)
+        tb(s, 9.05, y + 1.0, 3.6, 0.55, [lab], size=15, color=GREY)
 
-    # ------------------------------------------------------------------ 2
-    s = base(prs, "So far: a first model reached 0.893, then every tweak stalled", "The first model family", (
-        "My first image model squeezes each series into one token, then mixes six slots. Its public score was 0.893. One "
-        "correction: that notebook picks its configuration from a time budget, and on Kaggle's GPUs the three-model ensemble "
-        "would need about 21 hours, so it almost certainly ran only its smallest model, one ViT-S. I can't confirm that. "
-        "Then I tried every lever I had: resolution, more slices, a better head, a report-text loss, bigger ensembles, each "
-        "against a bar I set in advance. Nothing cleared it. So I concluded the labels were the ceiling. That was wrong."), 2)
-    pic(s, "ablation_path_and_nulls_progress.png", 0.3, 1.5, 9.35, 5.5)
-    callout(s, 9.75, 1.7, 3.1, 2.45, "What I tried", [
-        "Resolution, slice count, head init, a report-text loss, bigger ensembles",
-        "Each judged against a bar set in advance",
-        "All inside noise"], BLUE)
-    callout(s, 9.75, 4.35, 3.1, 2.45, "Caveat I owe you", [
-        "The 0.893 was most likely ONE small model (exp005): the 3-model notebook falls back on a time budget",
-        "Inferred, not confirmed"], VERM)
+    # ======================================================================== 3  Baseline model
+    s = base(prs, 3, "Baseline model", "Baseline: a public CoAtNet-2 window-attention notebook (0.924 public)", (
+        "The baseline is a public Kaggle notebook by Dread Development: a single CoAtNet-2 with attention over windows of three adjacent slices. There is no GitHub repository; it is a Kaggle notebook with a separate training notebook, and its weights are a Kaggle dataset. All the links are here. I did not use those weights; my backbone starts from public timm ImageNet weights, not knee-trained. The baseline reports 0.924 on the public leaderboard, which I have not re-run. Its 0.9167 on the 58 gold studies is optimistic, because its training keeps the best epochs by AUC on those same 58. My own first model scored 0.893. My code is on GitHub, private until October 22."))
+    card(s, 0.55, 1.5, 8.0, 2.9, "Code / GitHub repository", [
+        ("Baseline: no GitHub repo; two public Kaggle notebooks (Dread Development)", dict(size=13, bold=True)),
+        ("Inference: " + URL_INFER, dict(size=12, color=BLUE, link=URL_INFER)),
+        ("Training: " + URL_TRAIN, dict(size=12, color=BLUE, link=URL_TRAIN)),
+        ("Backbone library (timm): " + URL_TIMM_GH, dict(size=12, color=BLUE, link=URL_TIMM_GH)),
+        ("My repository: " + URL_MINE + "  (private until the Oct 22 close)", dict(size=12, color=GREY))], BLUE)
+    card(s, 0.55, 4.55, 8.0, 2.4, "Pretrained model URL", [
+        ("Baseline's trained weights (Kaggle dataset; I did not use them):", dict(size=13, bold=True)),
+        (URL_WEIGHTS, dict(size=12, color=BLUE, link=URL_WEIGHTS)),
+        ("My backbone init: timm CoAtNet-2, ImageNet-12k → 1k (not trained on knees):", dict(size=13, bold=True)),
+        (URL_TIMM_HF, dict(size=12, color=BLUE, link=URL_TIMM_HF))], GREEN)
+    card(s, 8.8, 1.5, 4.0, 5.45, "Baseline performance", [
+        ("Public baseline (author-reported, not re-run by me)", dict(size=13, bold=True)),
+        ("Public leaderboard: 0.924", dict(size=22, bold=True, color=VERM, after=4)),
+        ("Gold-58: 0.9167, optimistic: epochs were chosen on those 58 studies", dict(size=12, color=GREY, after=14)),
+        ("My first model (DINOv2 slots)", dict(size=13, bold=True)),
+        ("Public leaderboard: 0.893", dict(size=22, bold=True, color=BLUE, after=4)),
+        ("Metric: macro ROC-AUC over the 12 findings", dict(size=12, color=GREY))], VERM)
 
-    # ------------------------------------------------------------------ 3
-    s = base(prs, "A different formulation moved the score to 0.929", "Diagnosis and the change", (
-        "Instead of another ablation, I looked outside my own pipeline. The DINOv2 family stalled near 0.89 everywhere, "
-        "even in a public twenty-model ensemble, and one very different design didn't. Mine compresses each series to one "
-        "vector; the other keeps every window of three adjacent slices and lets each finding attend over all of them. To be "
-        "clear about what's mine: that window design follows a public notebook, which I cite. The label engine, the labels, "
-        "the folds, the laterality fix, the re-implementation and all the training are mine, with no third-party weights or "
-        "labels. It scored 0.929. I changed four things at once, so I can't say which one mattered."), 3)
-    pic(s, "formulation_before_after.png", 0.4, 1.55, 8.7, 5.3)
-    callout(s, 9.3, 1.7, 3.5, 2.55, "What's mine vs borrowed", [
-        "Borrowed: the window-MIL design, from a public Kaggle kernel (cited)",
-        "Mine: label engine, labels, folds, laterality fix, re-implementation, all training",
-        "No third-party weights or labels"], GREEN)
-    callout(s, 9.3, 4.45, 3.5, 2.3, "Honest caveat", [
-        "Four things changed together: backbone, windows, wider field of view, laterality fix",
-        "No ablation separates them"], VERM)
-
-    # ------------------------------------------------------------------ 4
-    s = base(prs, "Where the model looks: each finding pools over the windows it needs", "Looking inside the model", (
-        "Because each finding pools over windows, I can see where it looks. I chose these three studies by a rule fixed "
-        "before I viewed any map: the most confident gold-positive case per finding. So this is a best case, not a hit rate. "
-        "The ACL pools mostly from sagittal fat-suppressed slices, the medial meniscus from coronal, the Baker's cyst from "
-        "axial. Across all 58 gold studies, the ACL puts 62% of its attention on sagittal fat-suppressed slices, against 30% "
-        "if it were uniform. That shows where the pooling draws from. It's not proof of localization, and no radiologist has "
-        "checked these windows."), 4)
-    pic(s, "attention_windows_gold58_slide.png", 0.4, 1.5, 7.9, 5.5)
-    tb(s, 8.6, 1.7, 4.3, 0.4, ["How to read it"], size=20, color=BLUE, bold=True)
-    tb(s, 8.6, 2.2, 4.3, 4.6, [
-        ("Four most-attended windows per finding, plus attention over all windows", dict(bullet=True)),
-        ("ACL → sagittal, medial meniscus → coronal, Baker's cyst → axial", dict(bullet=True)),
-        ("Across all 58 gold studies: ACL puts 62% of its attention on sagittal FS slices (30% if uniform)", dict(bullet=True, bold=True)),
-        ("Studies picked by a fixed rule before any map was viewed: a best case, not a hit rate", dict(bullet=True, color=VERM)),
-        ("Shows where pooling draws from, not proof of localisation; no radiologist has checked", dict(bullet=True, color=GREY)),
-    ], size=16)
-
-    # ------------------------------------------------------------------ 5
-    s = base(prs, "Where things stand, and what is left", "Status", (
-        "Where things stand: my current best submissions are ten checkpoints at public 0.929, and a two-fold version at 0.925 "
-        "in about twenty minutes. The leaderboard beat my validation score every time, because I validate against noisy "
-        "report labels. Three lessons. One: six null results showed my model family was saturated, not that the problem was. "
-        "Two: measure runtime on the real hardware. I projected fifteen minutes and measured fifty-three. Three: a runtime "
-        "fallback can silently change which model you're scoring, which is why my 0.893 is probably one small model. Log the "
-        "choice. What's left: the private leaderboard on October 22, which I don't know yet, a demo in late November, "
-        "releasing code and weights after the close, and the final report on December 5."), 5)
-    rows = [("", "OOF", "Gold-58", "Public LB", "Runtime (2×T4)"),
-            ("Slot pipeline (most likely exp005 alone)", "0.8631", "0.8903", "0.893", "3 models ~21 h"),
-            ("10 checkpoints (current best, accuracy)", "0.8840", "0.9111", "0.929", "~100 min"),
-            ("2 folds (current best, efficiency)", "n/a", "0.9078", "0.925", "~20.5 min")]
-    gt = s.shapes.add_table(len(rows), 5, Inches(0.55), Inches(1.65), Inches(12.2), Inches(1.9))
+    # ======================================================================== 4  Method
+    s = base(prs, 4, "Method", "Existing implementation, my modifications, and preliminary results", (
+        "The existing implementation fills five slots with 64 slices, crops 140 millimetres, builds three-slice windows, and applies per-finding attention; its labels also come from a language model reading reports. My modifications: my own label engine, with expert thresholds, two language models, and calibration on the 58; my own folds, grouped by report cluster, never choosing epochs on the gold set; windows that never cross slots, with explicit laterality handling; and a ten-checkpoint ensemble plus a fast two-fold version. I did not audit whether the baseline handles laterality. Evaluation is macro AUC, out-of-fold, on the 58 gold studies and on the public leaderboard, plus attention maps. Preliminary: 0.929 versus 0.924, a small difference I am not claiming as an improvement. Private results come October 22."))
+    card(s, 0.55, 1.45, 4.0, 3.45, "Existing implementation", [
+        ("5 slots, 64 slices; 140 mm crop → 336 px", dict(bullet=True)),
+        ("Windows of 3 adjacent slices as RGB → CoAtNet-2 (384 px)", dict(bullet=True)),
+        ("Per-finding attention over all windows", dict(bullet=True)),
+        ("Labels: an LLM reads each report → soft labels (4,349 studies)", dict(bullet=True)),
+        ("Epochs chosen on the 58 gold studies", dict(bullet=True))], GREY, size=13)
+    card(s, 4.72, 1.45, 4.3, 3.45, "My modifications", [
+        ("Own label engine: expert-threshold rubric, 2 LLMs, leave-one-out calibration, noisy-student v3", dict(bullet=True)),
+        ("Own folds grouped by report cluster; epochs chosen without the gold set", dict(bullet=True)),
+        ("Windows never cross slot boundaries; laterality normalisation (side table → DICOM tag → geometry)",
+         dict(bullet=True)),
+        ("10-checkpoint ensemble; 2-fold fast variant", dict(bullet=True)),
+        ("Pre-registered gates; runtime measured on Kaggle T4s", dict(bullet=True))], GREEN, size=13)
+    card(s, 9.19, 1.45, 3.6, 3.45, "Evaluation metrics", [
+        ("Quantitative", dict(bold=True, size=12, color=BLUE, after=2)),
+        ("Macro ROC-AUC (mean of 12 per-finding AUCs): out-of-fold (4,349 studies), gold-58, public leaderboard",
+         dict(bullet=True)),
+        ("Efficiency score + runtime on 2×T4", dict(bullet=True, after=8)),
+        ("Qualitative", dict(bold=True, size=12, color=BLUE, after=2)),
+        ("Attention maps: top windows per finding; per-finding ROC curves", dict(bullet=True))], BLUE, size=13)
+    rows = [("Preliminary results", "OOF AUC", "Gold-58 AUC", "Public LB", "Runtime (2×T4)"),
+            ("Public baseline (author-reported)", "n/a", "0.9167 (optimistic)", "0.924", "n/a"),
+            ("Mine: 5 folds", "0.8816", "0.9091", "0.929", "~53 min"),
+            ("Mine: 10 checkpoints (best)", "0.8840", "0.9111", "0.929", "~100 min"),
+            ("Mine: 2 folds (fast)", "n/a", "0.9078", "0.925", "~20.5 min")]
+    gt = s.shapes.add_table(len(rows), 5, Inches(0.55), Inches(5.05), Inches(12.25), Inches(1.7))
     tbl = gt.table
-    for j, wd in enumerate([4.9, 1.4, 1.5, 1.7, 2.7]):
+    for j, wd in enumerate([4.2, 1.7, 2.45, 1.7, 2.2]):
         tbl.columns[j].width = Inches(wd)
     for i, r in enumerate(rows):
+        tbl.rows[i].height = Inches(0.34)
         for j, val in enumerate(r):
             c = tbl.cell(i, j)
             c.text = val
             c.fill.solid()
             c.fill.fore_color.rgb = BLUE if i == 0 else (LIGHT if i % 2 == 0 else WHITE)
             c.vertical_anchor = MSO_ANCHOR.MIDDLE
+            c.margin_top = c.margin_bottom = Inches(0.02)
             for p in c.text_frame.paragraphs:
                 p.alignment = PP_ALIGN.LEFT if j == 0 else PP_ALIGN.CENTER
                 for run in p.runs:
-                    run.font.name, run.font.size = FONT, Pt(16)
-                    run.font.bold = (i == 0) or (i > 1 and j == 3)
+                    run.font.name, run.font.size = FONT, Pt(13)
+                    run.font.bold = (i == 0) or (i == 3)
                     run.font.color.rgb = WHITE if i == 0 else INK
-    tb(s, 0.55, 3.65, 12.2, 0.4, ["Gold-58 is n = 58 (95% interval about ±0.03). OOF is scored against noisy report labels; the leaderboard beat it every time."],
-       size=12, color=GREY)
-    callout(s, 0.55, 4.2, 6.5, 2.65, "Three lessons so far", [
-        "Null ablations show a family is saturated, not where the ceiling is",
-        "Measure runtime on the target hardware: I projected 15 min, measured 53",
-        "A runtime fallback can silently change which model is scored: log it"], BLUE, size=15)
-    callout(s, 7.3, 4.2, 5.45, 2.65, "What is left", [
-        "Oct 22: private leaderboard (rank not yet known)",
-        "Nov 23–27: demo",
-        "After the close: release code + weights",
-        "Dec 5: final report"], VERM, size=17)
+    tb(s, 0.55, 6.78, 12.25, 0.3, ["Public-leaderboard differences of ~0.005 are not claimed as an improvement. Gold-58 is n = 58 "
+                                   "(95% interval about ±0.03). Private leaderboard: Oct 22."], size=11, color=GREY)
 
-    # ------------------------------------------------------------------ backup
-    s = base(prs, "Backup: per-label ROC on the 58 image-review studies", "Backup (for questions)", (
-        "Backup slide, not presented. Gold-58, exp021: strongest are medial meniscus and Baker's at 0.986, ACL 0.979, effusion "
-        "0.978; weakest are PF OA 0.824, lateral OA 0.828 and lateral meniscus 0.834. With n = 58 the intervals are wide. ACL is "
-        "the clearest case of noisy proxy labels: out-of-fold 0.857 but 0.979 on the 58."), 6)
-    pic(s, "roc_gold58_exp018_exp021.png", 0.4, 1.5, 7.6, 5.5)
-    tb(s, 8.4, 1.7, 4.4, 4.8, [
-        ("Strongest: medial meniscus, Baker's 0.986; ACL 0.979; effusion 0.978", dict(bullet=True)),
-        ("Weakest: PF OA 0.824, lateral OA 0.828, lateral meniscus 0.834", dict(bullet=True)),
-        ("n = 58: wide intervals, shown on the figure", dict(bullet=True, color=GREY)),
-        ("ACL: out-of-fold 0.857 but gold-58 0.979 → noisy proxy labels", dict(bullet=True, bold=True)),
-    ], size=16)
+    # ======================================================================== 5  Plan
+    s = base(prs, 5, "Plan", "Next steps and planned improvements", (
+        "Next steps. October 22: the competition closes and the private leaderboard shows whether these scores hold. Then I release code and weights, give the demo in late November, and submit the report on December 5. Planned improvements are analyses: ablate the four things I changed together to find which one mattered; ask a radiologist to review the attention windows, which are only a best-case illustration now; and trace two studies where deployed predictions differ from training, probably a laterality rule. Thank you."))
+    tb(s, 0.55, 1.5, 6.0, 0.4, ["Next steps"], size=20, color=BLUE, bold=True)
+    steps = [("Oct 22", "Competition closes: private leaderboard shows whether 0.929 holds", VERM),
+             ("After the close", "Release code, weights and a write-up", GREEN),
+             ("Nov 23–27", "Demo", BLUE),
+             ("Dec 5", "Final report", INK)]
+    for i, (when, what, col) in enumerate(steps):
+        y = 2.05 + i * 1.18
+        rect(s, 0.55, y, 1.85, 0.95, col)
+        tb(s, 0.55, y, 1.85, 0.95, [when], size=17, color=WHITE, bold=True, align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
+        rect(s, 2.4, y, 4.2, 0.95, LIGHT)
+        tb(s, 2.55, y, 3.95, 0.95, [what], size=15, anchor=MSO_ANCHOR.MIDDLE)
+    tb(s, 7.0, 1.5, 5.8, 0.4, ["Planned improvements"], size=20, color=BLUE, bold=True)
+    imps = [("Isolate what mattered", "Ablate the four changes I made together (backbone, windows, field of view, laterality)"),
+            ("Clinical check of the attention", "Ask a radiologist to review the attention windows; today they are a best-case illustration"),
+            ("Trace a prediction mismatch", "2 of 58 studies differ between training and deployment (suspected laterality rule); confirm the cause")]
+    for i, (head, body) in enumerate(imps):
+        y = 2.05 + i * 1.6
+        rect(s, 7.0, y, 5.8, 1.42, LIGHT)
+        rect(s, 7.0, y, 0.07, 1.42, BLUE)
+        tb(s, 7.2, y + 0.08, 5.5, 0.4, [f"{i + 1}.  {head}"], size=16, color=BLUE, bold=True)
+        tb(s, 7.2, y + 0.55, 5.5, 0.85, [body], size=14)
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     prs.save(str(OUT))
