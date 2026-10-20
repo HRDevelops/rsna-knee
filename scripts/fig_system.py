@@ -48,10 +48,10 @@ def arrow(ax, p0, p1, color=fc.C["grey"], ls="-"):
     ax.add_patch(FancyArrowPatch(p0, p1, arrowstyle="-|>", mutation_scale=8, color=color, lw=1.0, linestyle=ls))
 
 
-def lane(ax, x0, ys, specs, gap, hot=None):
+def lane(ax, x0, ys, specs, gap, hot=None, fs=6.0):
     x, pos = x0, []
     for w, t, b, e, lw in specs:
-        box(ax, x, ys, w, t, b, edge=e, lw=lw)
+        box(ax, x, ys, w, t, b, edge=e, lw=lw, fs=fs)
         pos.append((x, w))
         x += w + gap
     for i in range(len(specs) - 1):
@@ -101,5 +101,45 @@ def main() -> None:
     plt.close(fig)
 
 
+
+
+def main_wide() -> None:
+    """Slide-size version (12.1 x 2.95 in, text 9-10 pt) for the deck's introduction slide."""
+    global W, H, BH, TLH, BLH
+    W, H, BH, TLH, BLH = 12.1, 3.0, 0.8, 0.165, 0.14
+    fc.set_style()
+    fig = plt.figure(figsize=(W, H))
+    ax = fig.add_axes([0, 0, 1, 1]); ax.set_xlim(0, W); ax.set_ylim(0, H); ax.axis("off")
+    G, B, V, GR = fc.C["grey"], fc.C["blue"], fc.C["vermillion"], fc.C["green"]
+    ax.text(0.03, 2.95, "TRAINING ONLY: reports become labels (there are no reports at test time)", fontsize=10.5,
+            fontweight="bold", color=V, va="top")
+    ytop = 2.3
+    top = lane(ax, 0.03, ytop, [
+        (2.4, "Radiology reports", "4,407 studies, 12+ languages", G, 0.9),
+        (4.0, "Label engine", "Qwen2.5-72B + Llama-3.3-70B read each report;\ncalibrated on the 58 real labels", V, 1.6),
+        (2.9, "Soft labels (v3)", "12 probabilities per study", G, 0.9),
+        (2.1, "Training loss", "BCE against soft labels", G, 0.9),
+    ], gap=0.22, fs=9.0)
+    ax.plot([0.03, W - 0.03], [1.72, 1.72], color=fc.C["light"], lw=1.0)
+    ax.text(0.03, 1.66, "TRAINING AND TEST: the image-only model (the only part the competition notebook runs)", fontsize=10.5,
+            fontweight="bold", color=B, va="top")
+    ybot = 0.82
+    bot = lane(ax, 0.03, ybot, [
+        (1.5, "MRI study", "3-14 series, DICOM", G, 0.9),
+        (2.15, "5 slots, 64 slices", "140 mm, 336 px, laterality fixed", G, 0.9),
+        (1.85, "Windows", "3 adjacent slices, <= 54", G, 0.9),
+        (1.7, "CoAtNet-2", "one feature per window", G, 0.9),
+        (2.15, "Per-finding attention", "softmax over ALL windows", GR, 1.6),
+        (1.7, "12 probabilities", "macro ROC-AUC", B, 1.6),
+    ], gap=0.17, fs=9.0)
+    lx, lw_ = top[3]
+    ox, ow = bot[5]
+    arrow(ax, (lx + lw_ * 0.5, ytop - BH / 2 - 0.02), (ox + ow * 0.5, ybot + BH / 2 + 0.03), V, "--")
+    ax.text(lx + lw_ * 0.5 + 0.1, 1.78, "scores the outputs", fontsize=8.5, color=V, va="center", ha="left")
+    fc.save(fig, "system_overview_wide")
+    plt.close(fig)
+
+
 if __name__ == "__main__":
     main()
+    main_wide()

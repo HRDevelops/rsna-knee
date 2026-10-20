@@ -1,82 +1,101 @@
-# CV course progress presentation (5 minutes, instructor's 5-slide structure)
+# CV course progress presentation (max 5 minutes)
 
-File: `docs/presentation/progress_presentation.pptx` (built by `scripts/build_progress_deck.py`; speaker notes are in the file).
-Speaker notes total 513 words: about 3.8 min at 135 words/min, 4.3 min at 120.
+File: `docs/presentation/progress_presentation_v2.pptx` (6 slides: the instructor's five plus one for the models; built by `scripts/fig_deck_assets.py` then `scripts/build_progress_deck.py`). The earlier `progress_presentation.pptx` is superseded.
+
+Speaker notes: 476 words, about 3.5 min at 135 words/min and 4.0 min at 120.
 
 ## 1. Introduction
-*Required:* Project title; expected output and application; figure of the system (`docs/figures/system_overview.png`).
-
-- Title: Weak Supervision and Window-Level Attention for Knee-MRI Abnormality Detection (RSNA Knee Abnormality Detection, Kaggle 2026).
-- Expected output: 12 probabilities per knee-MRI study, from images only, scored by macro ROC-AUC.
-- Application: research decision support, not a medical device; delivered as a Kaggle code competition (main track + efficiency track).
+*Covers:* Title; expected output (12 probabilities, images only); application (research decision support); system figure; real MRI strip.
 
 **Speaker notes**
 
-> Hi, I'm Husnain. My project is on the RSNA knee MRI challenge on Kaggle. Given a knee MRI study, the system outputs twelve probabilities, one per finding: ACL, MCL, meniscus tears, arthritis, effusion and others. It uses images only and is scored by the average ROC-AUC. The application is research decision support, not a medical device. The figure shows the whole system. At the top, language models turn radiology reports into soft training labels, during training only. At the bottom is the image-only model: each study becomes windows of three adjacent slices, a CoAtNet encodes them, and each finding attends over all the windows.
+> I'm working on the RSNA knee MRI challenge on Kaggle. A knee study is several image series in three planes. The system reads one study and outputs twelve probabilities, one per finding, like ACL tear, meniscus tears and effusion, from images only, scored by the average ROC-AUC. The use is research decision support, not a medical device. In the diagram, the training labels come from radiology reports, but only during training; at test time only the images are used.
 
 ## 2. Dataset
-*Required:* Name and URL; size (samples and storage); input format.
-
-- RSNA Knee Abnormality Detection (Kaggle competition): https://www.kaggle.com/competitions/rsna-knee-abnormality-detection
-- 4,407 training studies (samples), 24,371 series, 819,078 DICOM slices; about 531 GB raw; my preprocessed cache 31.8 GB; hidden test ~1,300 studies.
-- Input: raw one-DICOM-per-slice (11-320 slices per series, mostly 512x512, 221 sizes); cache (64, 336, 336) uint8 per study; model input (K<=54, 3, 384, 384); target 12 values.
-- Only 58 studies have expert image-review labels; every study has a report, none at test time.
+*Covers:* Name + URL; size (4,407 studies, 24,371 series, 819,078 DICOM slices, ~531 GB raw, 31.8 GB cache); input format; the 58-of-4,407 bar drawn to scale.
 
 **Speaker notes**
 
-> The data is the RSNA Knee Abnormality Detection competition on Kaggle: 4,407 training studies, 24,371 series, about 819 thousand DICOM slices, roughly 531 gigabytes raw. The test set is hidden, about 1,300 studies. The key problem: only 58 studies have expert labels. Every study has a free-text report, but reports don't exist at test time. I preprocess each study into a 64 by 336 by 336 tensor, 32 gigabytes in total, then into up to 54 windows of three slices at 384 pixels. That is what the model sees.
+> The data is the Kaggle competition set: 4,407 training studies, about 819 thousand DICOM slices, roughly 531 gigabytes. The test set is hidden, about 1,300 studies. The problem is the bar, drawn to scale: only 58 studies have expert labels. The rest only have a free-text report, and at test time there are no reports. I turn each study into a 64 by 336 by 336 tensor, then up to 54 windows of three slices.
 
-## 3. Baseline model
-*Required:* GitHub/code link; pretrained-model URL; baseline performance.
-
-- Baseline: public Kaggle notebooks by Dread Development (no GitHub repo): inference, training. Backbone library: timm on GitHub. My repo: github.com/HRDevelops/rsna-knee (private until Oct 22).
-- Baseline weights (Kaggle dataset, NOT used by me): kaggle.com/datasets/dreaddevelopment/raptor-knee-widedense. My backbone init: timm CoAtNet-2 (ImageNet-12k -> 1k) on Hugging Face.
-- Performance: baseline public LB 0.924 (author-reported, not re-run; its gold-58 0.9167 is optimistic because epochs were chosen on those 58). My first model (DINOv2 slots): 0.893.
+## 3. Baseline model (my first model)
+*Covers:* My baseline = the DINOv2 slot model. GitHub link (private until Oct 22); pretrained-model URLs (DINOv2 ViT-B and ViT-S on Hugging Face); performance (OOF 0.863 / 0.868, public 0.893).
 
 **Speaker notes**
 
-> The baseline is a public Kaggle notebook by Dread Development: a single CoAtNet-2 with attention over windows of three adjacent slices. There is no GitHub repository; it is a Kaggle notebook with a separate training notebook, and its weights are a Kaggle dataset. All the links are here. I did not use those weights; my backbone starts from public timm ImageNet weights, not knee-trained. The baseline reports 0.924 on the public leaderboard, which I have not re-run. Its 0.9167 on the 58 gold studies is optimistic, because its training keeps the best epochs by AUC on those same 58. My own first model scored 0.893. My code is on GitHub, private until October 22.
+> My baseline is the first model I built, a DINOv2 slot model. Each series goes through a vision transformer and is squashed into one token; a small transformer mixes six slots and twelve queries read the result. It starts from public DINOv2 weights; the code is in my GitHub repository, private until the competition closes. The best version scored 0.868 out-of-fold. My first submission scored 0.893 publicly, though I believe it was the small model alone.
+
+## Everything I trained (extra slide)
+*Covers:* All models trained and scored on the same 5 folds (OOF macro-AUC) plus the things tried with no gain.
+
+**Speaker notes**
+
+> Every model I trained, on the same folds. Blue is the DINOv2 slot family. The biggest steps were better labels, 0.849 to 0.863, and a bigger backbone, about 0.005. A newer backbone was worse, a 3D network was too slow, and the tweaks on the right gave nothing beyond noise. Orange is the window-attention family, 0.882 and 0.884. The public leaderboard moved more than this proxy: 0.893 to 0.929.
 
 ## 4. Method
-*Required:* Existing implementation and my modifications; evaluation metrics; preliminary results.
-
-- Existing: 5 slots/64 slices, 140 mm crop to 336 px; 3-slice RGB windows into CoAtNet-2 (384 px); per-finding attention; LLM-derived soft labels (4,349 studies); epochs chosen on the 58 gold studies.
-- Mine: own label engine (expert-threshold rubric, 2 LLMs, leave-one-out calibration, noisy-student v3); own folds grouped by report cluster, epochs chosen without gold; windows never cross slots + explicit laterality normalisation; 10-checkpoint ensemble; 2-fold fast variant; pre-registered gates; measured T4 runtime.
-- Metrics: macro ROC-AUC (out-of-fold on 4,349 studies, gold-58, public leaderboard); efficiency score and runtime; qualitative: attention maps, per-finding ROC curves.
-- Preliminary results: mine 5 folds 0.8816 / 0.9091 / 0.929; 10 checkpoints 0.8840 / 0.9111 / 0.929; 2 folds -- / 0.9078 / 0.925 (OOF / gold-58 / public LB).
+*Covers:* Design I started from (public notebook, 0.924 author-reported) vs my four changes; metrics; public-leaderboard comparison.
 
 **Speaker notes**
 
-> The existing implementation fills five slots with 64 slices, crops 140 millimetres, builds three-slice windows, and applies per-finding attention; its labels also come from a language model reading reports. My modifications: my own label engine, with expert thresholds, two language models, and calibration on the 58; my own folds, grouped by report cluster, never choosing epochs on the gold set; windows that never cross slots, with explicit laterality handling; and a ten-checkpoint ensemble plus a fast two-fold version. I did not audit whether the baseline handles laterality. Evaluation is macro AUC, out-of-fold, on the 58 gold studies and on the public leaderboard, plus attention maps. Preliminary: 0.929 versus 0.924, a small difference I am not claiming as an improvement. Private results come October 22.
+> The public notebook I started from keeps every window of three adjacent slices and lets each finding attend over them. I rebuilt it and changed four things. Labels: Qwen and Llama read each report; a small calibrator per finding is fit on the 58 expert labels, always scoring a study with a calibrator that never saw it; then one noisy-student round. Folds are grouped by report cluster, and epochs are never chosen on the gold set. Windows never cross slots, and laterality is normalized. Result: 0.929 against 0.924 for the public notebook, a small difference.
 
 ## 5. Plan
-*Required:* Next steps and planned improvements.
-
-- Next steps: Oct 22 private leaderboard; after the close release code, weights and write-up; Nov 23-27 demo; Dec 5 final report.
-- Planned improvements (analyses): ablate the four bundled changes; radiologist review of the attention windows; trace the 2/58 prediction mismatch (suspected laterality rule).
+*Covers:* Dates (Oct 22, Nov 23-27, Dec 5) and three concrete experiments with cost.
 
 **Speaker notes**
 
-> Next steps. October 22: the competition closes and the private leaderboard shows whether these scores hold. Then I release code and weights, give the demo in late November, and submit the report on December 5. Planned improvements are analyses: ablate the four things I changed together to find which one mattered; ask a radiologist to review the attention windows, which are only a best-case illustration now; and trace two studies where deployed predictions differ from training, probably a laterality rule. Thank you.
+> Next steps: on October 22 the private leaderboard shows whether 0.929 holds; then the demo in late November and the report on December 5. I also want to answer three questions with experiments. What caused the jump? The backbone is measured; I will undo the field of view and the laterality fix, five folds each, about 17 GPU-hours. Is the attention real? Delete the top-attended windows and compare with random ones. Does it survive missing data? Drop one plane at test time.
+
+## Plain-language explanations (for questions)
+
+**Which LLM did we use?** Both, per finding. Qwen2.5-72B-Instruct and Llama-3.3-70B each read every report. For each of the
+12 findings, the better option was chosen by leave-one-out AUC on the 58 gold studies: the average of both for 8 findings
+(ACL, MCL, medial meniscus, medial OA, lateral OA, PF OA, effusion, contusion), Qwen alone for 2 (lateral meniscus, fracture),
+Llama alone for 2 (synovitis, Baker's). (`docs/label_blend_v2_final.md`)
+
+**CoAtNet in our case.** CoAtNet is a hybrid image network: the early layers are convolutions (good at local texture), the
+later layers are transformer attention (good at global context). We use `coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k` from timm:
+72.9 M parameters, pretrained on ImageNet-12k and fine-tuned on ImageNet-1k at 384 px (generic photos, not knees), and we
+fine-tune all of it. One input is a *window*: 3 adjacent MRI slices stacked as the three colour channels. The network turns
+each window into a 1,024-number feature; a study has up to 54 windows, and a small attention layer (one per finding) weights
+them to produce that finding's probability.
+
+**"Leave-one-out calibrated on the 58 labels."** A language model gives a raw number per finding for each report, and raw
+numbers are not trustworthy probabilities. Calibration (Platt scaling) fits a tiny logistic regression that maps the raw
+number to a probability, using the studies that have real labels. Leave-one-out means: to score study i, fit that mapping on
+the other 57 and apply it to study i; repeat for all 58. Then compute AUC over those 58 honest predictions (macro 0.823). The
+labeler is never graded on data it was tuned on, and this is how the per-finding choice (Qwen / Llama / both) was made.
+
+**"Noisy student v3."** Round 1: train an image model (exp002) on the report labels. For every study take its out-of-fold
+prediction (from a model that never saw that study). Blend per finding: new label = (1 - w) x report label + w x image
+prediction, with w chosen per finding by the same leave-one-out test on the 58 (image-heavy for 10 findings; report-heavy for
+ACL and MCL, where reports are better). Train fresh models on these `v3` labels. The image model acts as a teacher whose
+labels are imperfect, hence "noisy student". It gave +0.014 OOF. A second round (`v4`) got worse, so I stopped. Caution: the
+blend weights were chosen on the same 58, so the 0.904 leave-one-out figure is optimistic; the independent check was OOF
+against the original report labels (0.8631 vs 0.8489).
+
+**Did we run only one baseline?** No. My own baseline family: exp002 (ViT-S), exp003 (ViT-B), exp005 (ViT-S, v3 labels),
+exp006 (ViT-B, v3), exp004 (DINOv3, worse), exp009 (ConvNeXt-V2), exp007 (3D ResNet, stopped), exp008 (distilled), and the
+3-model ensemble. The public Kaggle notebook was never run by me; only its author-reported score (0.924) is used.
 
 ## Fact sources
 
 | Fact | Source |
 |---|---|
-| Competition name/URL | `competition_sources` in the notebooks' `kernel-metadata.json`; URL answered HTTP 200 on 2026-10-15 |
-| 4,407 studies, 24,371 series, 819,078 DICOM files, 11-320 slices/series, 512x512 most common (24%), 221 sizes | `artifacts/decode_audit.parquet` (sum of `n_files`), `CLAUDE.md` s3 |
-| ~531 GB raw | `docs/EXPERIMENTS.md` (`data/raw` 531GB, `du`); NOT re-measured today (HPC unreachable: DNS) |
-| Cache 31.8 GB; (64,336,336) uint8; K<=54 windows; res 384 | `docs/EXPERIMENTS.md` exp018 pre-registration; `src/rsna_knee/wmil.py`; attention-extraction log (`res 384`) |
-| Baseline design, labels, 0.924, 0.9167 | docstring of `kernels/knee-mri-twelve-findings-from-a-single-model/*.py` (author-reported, not re-run) |
-| Baseline selects epochs on the 58 gold studies | `kernels/knee-mri-training-the-twelve-finding-model/*.py` (gold set used as validation, top-k by `gold_auc`) |
-| Baseline notebook/dataset/HF/timm URLs | each answered HTTP 200 on 2026-10-15 |
-| My results | `docs/EXPERIMENTS.md` (2026-09-21, 09-22, 09-25, 09-26, 10-01); `docs/CV_PROGRESS_PRESENTATION` earlier revision's source table |
+| Competition URL, 4,407 / 24,371 / 819,078, 11-320 slices, mostly 512x512 | `artifacts/decode_audit.parquet`; `CLAUDE.md` s3; notebooks' `kernel-metadata.json` |
+| ~531 GB raw (not re-measured; cluster unreachable); 31.8 GB cache | `docs/EXPERIMENTS.md` (`data/raw` 531GB; exp018 pre-registration) |
+| Baseline model, OOF 0.8631 / 0.8681, public 0.893 (most likely exp005) | ledger B; `docs/EXPERIMENTS.md` 2026-09-27, 2026-10-01 |
+| DINOv2 URLs (HTTP 200 on 2026-10-20) | `configs/exp005_*.yaml`, `exp006_*.yaml` backbone names |
+| All models' OOF (chart) | ledger B; exp018/exp021 results; exp022 result |
+| Things tried with no gain | ledger C and D; 2026-09-24 (EMA, CoAtNet-3); 2026-09-26 (dense windows) |
+| Public notebook design, 0.924 author-reported | docstring of `kernels/knee-mri-twelve-findings-from-a-single-model/*.py` |
+| exp022 partial test: 0.8681 slots -> 0.8709 windows -> 0.8816 CoAtNet-2 | ledger B; 2026-09-26 exp022 result |
+| Plan costs: ~100 min per fold; 17 GPU-hours = 2 x 5 x ~100 min | exp018 fold-0 record (370 s/epoch x 16) |
 
 ## To confirm before presenting
 
-- **GitHub repo is private** until Oct 22: the professor cannot open it. Either add them as a collaborator or keep the slide's 'private until the close' wording.
-- **Slide 5's three 'planned improvements' are proposals**, not commitments you made. Edit or delete any you do not intend to do.
-- 'Demo Nov 23-27' is taken from your instruction; the slide does not say what the demo shows.
-- ~531 GB is the earlier recorded `du` of the raw data folder; it could not be re-measured today.
-- The baseline's 0.924 and 0.9167 are what its author reports; I did not re-run it.
-- The deck contains no MRI images (the system figure is a diagram), so the competition data terms are not an issue for this file.
+- **The plan slide's three experiments are proposals**, not work already decided. Keep only the ones you will actually do.
+- **GitHub repo is private** until Oct 22; the professor cannot open the link. Add them as a collaborator or keep the wording.
+- "Demo Nov 23-27" is from your instruction; the slide does not say what the demo shows.
+- The 531 GB figure is the earlier recorded `du`; it could not be re-measured.
+- The deck contains real MRI slices (intro slide). Course use is very likely fine; check the competition's data terms before it goes anywhere public.
