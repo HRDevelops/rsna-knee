@@ -114,8 +114,8 @@ def main() -> None:
             "informative (see the attention figures).", fontsize=6.4, color=GRN, va="center")
 
     ax.text(0.03, 0.55, "The 0.893 -> 0.929 change bundled four things (backbone family, window input, 140 mm FOV, corrected "
-            "laterality); no ablation isolates which one matters.\nDINOv2-B placed inside the window pipeline (exp022) reached OOF "
-            "0.8709 vs 0.8816 for CoAtNet-2, so the pipeline, more than the backbone, sets what the model sees.",
+            "laterality); no ablation isolates which one matters.\nPartial evidence (OOF): DINOv2-B went 0.8681 as slots -> 0.8709 as windows (exp022), "
+            "and CoAtNet-2 in the same window pipeline reached 0.8816, so the backbone swap was the larger step.",
             fontsize=5.8, color=G, va="top", linespacing=1.45)
     fc.save(fig, "formulation_before_after")
     plt.close(fig)

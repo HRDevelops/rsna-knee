@@ -85,8 +85,9 @@ had no side normalisation at all.
 **The design follows a public notebook** ([dreaddevelopment, "Knee MRI: twelve findings from a single model"](https://www.kaggle.com/code/dreaddevelopment/knee-mri-twelve-findings-from-a-single-model));
 I re-implemented it, trained on my own labels and folds, and used no third-party weights or labels. The jump from 0.893 to
 0.929 bundled four changes (backbone family, window input, wider field of view, corrected laterality) and I did not
-isolate them. A DINOv2-B backbone placed inside the same window pipeline scored lower (OOF 0.8709 vs 0.8816), which hints
-that the pipeline matters more than the backbone, but that is a hint.
+isolate them. The one partial test points at the backbone: DINOv2-B scored 0.8681 OOF as a slot model and 0.8709 inside the
+window pipeline (+0.003), while CoAtNet-2 in the same pipeline scored 0.8816 (+0.011 more). The leaderboard, though, moved
++0.036 against about +0.014 on the proxy, so the proxy may not capture everything that changed.
 
 **Where it looks.** Because each finding attends over windows, the attention can be inspected. Over all 58 gold studies,
 the ACL puts 62% of its attention on sagittal fat-suppressed slices (30% if uniform), Baker's cyst 45% on axial (20%).
