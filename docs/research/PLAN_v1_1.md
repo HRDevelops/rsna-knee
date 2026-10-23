@@ -1,3 +1,13 @@
+> **Superseded by `PLAN_v1_2.md` (2026-10-24, after review round 2).** Kept unchanged below as the record of what was
+> reviewed. Known issues in this version:
+> - the absolute positional encoding uses raw patient axes (not frame-invariant, and no reflection for right knees);
+> - §3 claims exp018-cache vs cache v2 isolates the data-usage effect, but cache v2 changes six things at once;
+> - B\* is not capacity-matched to the method;
+> - the 4×4 grid was not tested;
+> - all series enter as one flat bag;
+> - the "76% downsampled without anti-aliasing" figure is nominal, because most of those pixels are zero-filled
+>   (v1.2 §1.3).
+
 # Research plan v1.1 — patient-space correspondence for multi-planar knee MRI (draft for review)
 
 Supersedes `PLAN_v1.md` after review round 1 (2026-10-23). Nothing has been run yet except metadata audits. Every number
