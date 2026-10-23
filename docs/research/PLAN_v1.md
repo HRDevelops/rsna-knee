@@ -1,3 +1,8 @@
+> **Superseded by `PLAN_v1_1.md` (2026-10-23, after review round 1).** Kept unchanged below as the record of what was
+> reviewed. Known errors in this version: it assumes a common coordinate frame that is not yet verified, uses raw
+> PixelSpacing after preprocessing, and states that CoPAS covers the same 12 findings and has no public code. Both CoPAS
+> statements are wrong.
+
 # Research plan v1 — tri-planar, acquisition-aware fusion for knee MRI (draft for review)
 
 Status: proposal, nothing run yet. Written 2026-10-23 after the competition closed. Every number below is either

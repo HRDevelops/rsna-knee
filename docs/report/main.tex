@@ -84,10 +84,12 @@ CoAtNet~\cite{dai2021coatnet} via timm~\cite{wightman2019timm}.}
 \item \nt{The window-MIL design follows a public Kaggle kernel~\cite{dread2026kernel}; say so plainly (re-implemented, own
 labels and folds, no third-party weights or labels).}
 \item \nt{LLM tooling: Qwen2.5~\cite{qwen2025}, Llama~3~\cite{llama3}, vLLM~\cite{kwon2023vllm}.}
-\item \nt{Closest prior work: Qiu et al.~\cite{qiu2024coplane} (Nature Communications 2024) learn co-plane attention across
-MRI sequences for the same twelve knee abnormalities. State the difference plainly: their supervision and data versus
-this challenge's 58 image-review labels plus report-derived labels; compare per-finding AUCs only as context, not as a
-like-for-like benchmark (the EXPERIMENTS.md 2026-09-17 entry has the per-label comparison that was made).}
+\item \nt{Closest prior work: Qiu et al.~\cite{qiu2024coplane} (CoPAS, Nature Communications 2024) learn co-plane attention
+across MRI sequences for twelve knee abnormalities. Their twelve are a DIFFERENT set from RSNA's, and include PCL, LCL,
+plica, infrapatellar fat pad and patellar retinaculum (EXPERIMENTS.md 2026-09-17 maps the overlap). They use 1,748
+subjects from five centres with arthroscopy-confirmed labels, and their code is public. State the difference plainly:
+their supervision and data versus this challenge's 58 image-review labels plus report-derived labels. Compare per-finding
+AUCs only as context, on the overlapping findings, not as a like-for-like benchmark.}
 \end{itemize}
 \end{notes}
 
