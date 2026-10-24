@@ -24,11 +24,13 @@ Per study (same random sample rule as check_series_geometry.py, seed 0):
   * every pair of families: rigid 6-DOF Mattes mutual-information registration around the DICOM placement (identity in
     patient coordinates). The fixed image is the family earlier in the slot order. The 4x4 result maps fixed-domain
     points to moving-domain points, so a perfectly consistent pair gives the identity;
-  * robust local search (the 2026-10-25 pilot showed single-start MI drifting up to 48 mm / 20 deg on partially
-    overlapping thick-slice stacks while the DICOM placement was visibly correct): the metric is restricted to a
-    45 mm sphere around the study centre, to fixed AND moving foreground, and to fixed voxels at least 10 mm inside the
-    moving stack; the optimizer runs from the DICOM placement and from 4 perturbed starts (3 mm / 2 deg); every
-    candidate, including the unmoved DICOM placement, is scored by EXACT Mattes MI over all mask voxels, and the best wins;
+  * robust local search (pilot 1, 2026-10-25: single-start MI drifted up to 48 mm / 20 deg on partially overlapping
+    thick-slice stacks while the DICOM placement was visibly correct; pilot 2: optimizing on a random 30% sample but
+    selecting on all voxels made the two objectives disagree; pilot 3 and a benchmark: regular-step gradient descent
+    stalls in the rotation-translation valley, Powell does not). The metric is Mattes MI over ALL voxels of a fixed mask:
+    fixed foreground within 45 mm of the study centre and at least 10 mm inside the moving stack. Powell runs from the
+    DICOM placement and from 2 perturbed starts (3 mm / 2 deg) on that same objective; the unmoved DICOM placement is
+    also a candidate; candidates that push > 20% of the samples out of the moving stack are rejected; lowest MI wins;
   * cross-plane pairs only: injected-error recovery. The moving stack's geometry is moved by a known rigid transform P
     (5 mm / 3 deg and 10 mm / 5 deg, random axis and direction, about the study centre) and the same search is run;
     the expected result is P o T0, the error is the residual of (P o T0)^-1 o T';
@@ -69,7 +71,7 @@ CELL_MM = 160.0 / 6                                 # 6x6 token cell on the 160 
 INJECT = [(5.0, 3.0), (10.0, 5.0)]                  # (mm, deg)
 TOL_MM, TOL_DEG = 3.0, 2.0                          # QC trigger, same numbers as the raw-geometry gate
 ROI_MM = 45.0                                       # metric region: sphere around the study centre (the joint)
-N_STARTS = 4                                        # perturbed starts besides the DICOM placement
+N_STARTS = 2                                        # perturbed starts besides the DICOM placement
 START_MM, START_DEG = 3.0, 2.0
 MIN_MASK_VOXELS = 3000
 
@@ -228,31 +230,43 @@ def moved(img: sitk.Image, P: np.ndarray) -> sitk.Image:
 
 
 # ------------------------------------------------------------------------------------------ registration
-def _method(fmask: sitk.Image, mmask: sitk.Image, sampling: float | None, seed: int) -> sitk.ImageRegistrationMethod:
+# One objective everywhere: Mattes MI over ALL fixed-mask voxels (no random sampling), so the optimizer and the
+# candidate selection agree (pilot 2 used 30% random sampling to optimize but all voxels to select, which made the
+# unmoved placement win on a technicality and broke the injected-error test). No moving mask: the fixed sample set
+# then stays the same for every transform, which removes the overlap bias; the overlap guard below rejects candidates
+# that push samples out of the moving stack (pilot 2's 113 mm outlier).
+MIN_OVERLAP = 0.8                                   # of the DICOM placement's in-stack sample fraction
+
+
+def _method(fmask: sitk.Image) -> sitk.ImageRegistrationMethod:
     R = sitk.ImageRegistrationMethod()
     R.SetMetricAsMattesMutualInformation(numberOfHistogramBins=32)
-    if sampling is None:
-        R.SetMetricSamplingStrategy(R.NONE)
-    else:
-        R.SetMetricSamplingStrategy(R.RANDOM)
-        R.SetMetricSamplingPercentage(sampling, seed)
+    R.SetMetricSamplingStrategy(R.NONE)
     R.SetMetricFixedMask(fmask)
-    R.SetMetricMovingMask(mmask)
     R.SetInterpolator(sitk.sitkLinear)
     return R
 
 
-def exact_mi(fixed, moving, fmask, mmask, M: np.ndarray, centre: np.ndarray) -> float:
-    """Mattes MI over ALL mask voxels at transform M (negative; lower is better). Comparable across candidates."""
-    R = _method(fmask, mmask, None, 0)
+def exact_mi(fixed, moving, fmask, M: np.ndarray, centre: np.ndarray) -> float:
+    """Mattes MI over all fixed-mask voxels at transform M (negative; lower is better)."""
+    R = _method(fmask)
     R.SetInitialTransform(euler(M, centre))
     return float(R.MetricEvaluate(fixed, moving))
 
 
-def optimize(fixed, moving, fmask, mmask, centre: np.ndarray, start: np.ndarray, seed: int):
-    R = _method(fmask, mmask, 0.3, seed)
-    R.SetOptimizerAsRegularStepGradientDescent(learningRate=1.0, minStep=5e-3, numberOfIterations=200,
-                                               relaxationFactor=0.6, gradientMagnitudeTolerance=1e-8)
+def overlap(moving: sitk.Image, mask_pts: np.ndarray, M: np.ndarray) -> float:
+    """Share of the fixed-mask points that land inside the moving stack under M."""
+    return float(inside(moving, mask_pts @ M[:3, :3].T + M[:3, 3], 0.0).mean())
+
+
+def optimize(fixed, moving, fmask, centre: np.ndarray, start: np.ndarray):
+    """Powell (Brent line searches). Benchmark 2026-10-25 (job 33420, real pilot pairs, injected 5 mm / 3 deg and
+    10 mm / 5 deg): Powell returned to the pair's MI minimum in every case (0.00 mm / 0.00 deg), while regular-step
+    gradient descent stalled in the rotation-translation valley (1.7-25 mm off, final MI worse than the start) and
+    conjugate-gradient line search was erratic (1.4-72 mm)."""
+    R = _method(fmask)
+    R.SetOptimizerAsPowell(numberOfIterations=100, maximumLineIterations=100, stepLength=1.0,
+                           stepTolerance=1e-4, valueTolerance=1e-7)
     R.SetOptimizerScalesFromPhysicalShift()
     R.SetShrinkFactorsPerLevel([1, 1, 1])
     R.SetSmoothingSigmasPerLevel([2.0, 1.0, 0.0])
@@ -263,26 +277,36 @@ def optimize(fixed, moving, fmask, mmask, centre: np.ndarray, start: np.ndarray,
 
 
 def register(fixed, moving, fmask, centre: np.ndarray, probes: np.ndarray, rng: np.random.Generator, seed: int):
-    """Multi-start local search; every candidate, including the unmoved DICOM placement, is scored by exact MI and the
-    best one is returned with diagnostics."""
-    mmask = moving > 0.1
+    """Multi-start local search on one exact objective; the unmoved DICOM placement is also a candidate. Candidates
+    that lose > 20% of the in-stack overlap are rejected; the lowest MI wins. `seed` is unused (kept for the API)."""
+    pts = voxel_points(fixed)[sitk.GetArrayFromImage(fmask).ravel() > 0]
     starts = [np.eye(4)] + [rigid(rng.normal(size=3), START_DEG, START_MM * unit(rng.normal(size=3)), centre)
                             for _ in range(N_STARTS)]
     cands = [("dicom", np.eye(4), 0)]
     for i, S in enumerate(starts):
         try:
-            M, it = optimize(fixed, moving, fmask, mmask, centre, S, seed + i)
+            M, it = optimize(fixed, moving, fmask, centre, S)
             cands.append((f"start{i}", M, it))
         except RuntimeError:                                        # e.g. too many samples outside the moving stack
             continue
-    scored = sorted(((exact_mi(fixed, moving, fmask, mmask, M, centre), name, M, it) for name, M, it in cands),
-                    key=lambda s: s[0])
-    mi_best, best, M_best, it_best = scored[0]
+    ov0 = overlap(moving, pts, np.eye(4))
+    scored = []
+    for name, M, it in cands:
+        ov = overlap(moving, pts, M)
+        if name == "dicom" or ov >= MIN_OVERLAP * ov0:
+            scored.append((exact_mi(fixed, moving, fmask, M, centre), name, M, it, ov))
+    scored.sort(key=lambda s: s[0])
+    mi_best, best, M_best, it_best, ov_best = scored[0]
     mi_dicom = next(s[0] for s in scored if s[1] == "dicom")
     opt = [s for s in scored if s[1] != "dicom"]
-    agree = sum(deviation(np.linalg.inv(M_best) @ s[2], probes)["disp_max_mm"] <= 1.0 for s in opt)
-    return M_best, dict(best=best, mi_dicom=mi_dicom, mi_best=mi_best, n_starts_ok=len(opt), n_agree_1mm=int(agree),
-                        iterations=it_best)
+    if opt:                                                         # do the optimized starts reach one basin?
+        ref = opt[0][2]
+        agree = sum(deviation(np.linalg.inv(ref) @ s[2], probes)["disp_max_mm"] <= 1.0 for s in opt)
+    else:
+        agree = 0
+    return M_best, dict(best=best, mi_dicom=mi_dicom, mi_best=mi_best, n_starts_ok=len(opt),
+                        n_rejected_overlap=len(cands) - len(scored), n_agree_1mm=int(agree), iterations=it_best,
+                        overlap_ratio=ov_best / max(ov0, 1e-9))
 
 
 def qc_png(fixed: sitk.Image, moving: sitk.Image, tx: sitk.Transform, path: Path) -> None:

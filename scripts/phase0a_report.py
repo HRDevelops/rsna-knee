@@ -16,7 +16,10 @@
 docs/research/PLAN_v1_3.md s5 (amended after the final review). Gates are on CROSS-PLANE pairs and on triangles with one
 series from each plane; same-plane pairs and mixed triangles are reported but not gated.
 
-    python scripts/phase0a_report.py DIR            (writes DIR/report.md and prints it)
+    python scripts/phase0a_report.py DIR [PILOT_LIST]     (writes DIR/report.md and prints it)
+
+PILOT_LIST (optional): file with one StudyInstanceUID per line. Those studies were used to develop the audit tool
+(pilots 1-3, 2026-10-25), so the gates are computed WITHOUT them; their numbers are shown separately.
 
 Gates:
   G1 optimizer precision: injected errors (5 mm/3 deg and 10 mm/5 deg, cross-plane pairs) recovered within 1 mm and
@@ -58,13 +61,21 @@ def q(s: pd.Series, qs=(0.5, 0.9, 0.95, 0.99)) -> str:
     return " / ".join(f"{v:.2f}" for v in s.quantile(list(qs))) if len(s) else "n/a"
 
 
-def main(d: Path) -> None:
+def main(d: Path, pilot: set | None = None) -> None:
     pairs = pd.concat([pd.read_parquet(f) for f in sorted(glob.glob(str(d / "pairs_*.parquet")))], ignore_index=True)
     series = pd.concat([pd.read_parquet(f) for f in sorted(glob.glob(str(d / "series_*.parquet")))], ignore_index=True)
     out = []
     p = out.append
+    pilot = pilot or set()
+    pilot_pairs = pairs[pairs.study.isin(pilot) & (pairs.inject == 0) & pairs.ok & (pairs.pair_type == "cross")]
+    pairs = pairs[~pairs.study.isin(pilot)]
+    series = series[~series.study.isin(pilot)]
     n_st = series.study.nunique()
     p(f"# Phase 0A report ({d.name})\n")
+    if pilot:
+        within = ((pilot_pairs.disp_max_mm <= TOL_MM) & (pilot_pairs.rot_deg <= TOL_DEG)).mean()
+        p(f"Gates use the {n_st} studies NOT used to develop the audit tool. The {len(pilot)} pilot studies are excluded "
+          f"(their cross-plane pairs, for the record: {len(pilot_pairs)}, within 3 mm and 2°: {within:.1%}).\n")
     p(f"Studies: {n_st}. Series loaded: {int(series.ok.sum())} / {len(series)} "
       f"(failures: {series[~series.ok].error.str.split(':').str[0].value_counts().to_dict() if (~series.ok).any() else 0}).")
     ser_ok = series[series.ok]
@@ -146,8 +157,10 @@ def main(d: Path) -> None:
     p("\nSearch diagnostics (cross-plane; exact Mattes MI over all mask voxels, negative, lower is better; the unmoved "
       f"DICOM placement is one of the candidates): DICOM placement itself best in {(cross.best == 'dicom').mean():.1%}; "
       f"MI gain of the selected candidate over the DICOM placement median {gain.median():.4f}, p90 "
-      f"{gain.quantile(.9):.4f}; optimized starts agreeing within 1 mm of the selected one: median "
-      f"{cross.n_agree_1mm.median():.0f} of {cross.n_starts_ok.median():.0f}.\n")
+      f"{gain.quantile(.9):.4f}; optimized starts agreeing within 1 mm with each other: median "
+      f"{cross.n_agree_1mm.median():.0f} of {cross.n_starts_ok.median():.0f} (all agree in "
+      f"{(cross.n_agree_1mm == cross.n_starts_ok).mean():.1%}); candidates rejected by the overlap guard: "
+      f"{cross.n_rejected_overlap.sum():.0f}.\n")
 
     # ---------------------------------------------------------------- decision
     p("## Decision\n")
@@ -174,4 +187,7 @@ def main(d: Path) -> None:
 
 
 if __name__ == "__main__":
-    main(Path(sys.argv[1]))
+    pil = set()
+    if len(sys.argv) > 2:
+        pil = {ln.strip() for ln in Path(sys.argv[2]).read_text().splitlines() if ln.strip()}
+    main(Path(sys.argv[1]), pil)

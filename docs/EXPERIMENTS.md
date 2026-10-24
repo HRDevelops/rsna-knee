@@ -3122,3 +3122,51 @@ METHOD_WRITEUP, the exp005/exp018 model cards, CV_PROGRESS_PRESENTATION, VIDEO_O
 also chosen at run time and is recorded as unknown. Learning added: a runtime degradation ladder can silently change
 which model is scored; log the chosen rung, and measure on the target hardware before trusting what a score belongs
 to.
+
+## 2026-10-25 — Research Phase 0A (geometry validity) — PRE-REGISTRATION + LAUNCH (written before the full run)
+
+Post-competition research plan `docs/research/PLAN_v1_3.md`, frozen after review round 4 ("GO, start Phase 0A"). Phase
+0A asks the one remaining foundational question: does the retained DICOM geometry (IPP / IOP / PixelSpacing) place the
+separately acquired series of a study consistently, given that FrameOfReferenceUIDs were re-keyed per series? CPU only;
+no labels, no model.
+
+**Sample and design.**
+- 150 training studies: the seed-0 sample of `scripts/check_series_geometry.py`.
+- One series per plane family, by the cache's slot rules (Sagittal FS / non-FS, Coronal FS / non-FS, Axial).
+- Every pair is registered rigidly around the DICOM placement: 6-DOF Mattes MI in SimpleITK 2.4.1.
+- Every cross-plane pair also gets injected rigid errors of 5 mm / 3° and 10 mm / 5°.
+- Cycle consistency is checked on triangles.
+- Metrics are taken at 9 probe points around the study centre, in mm, degrees and footprint units d (6×6 tokens).
+- Code: `scripts/phase0a_registration.py`, `scripts/phase0a_report.py`, `slurm/phase0a_registration.sbatch`.
+- Synthetic end-to-end check: `tests/test_phase0a_geometry.py`. Two exact-geometry acquisitions of a phantom; the
+  identity is found within 0.12 mm, and injected errors are recovered within 0.01 mm.
+
+**Audit-tool development on 5 pilot studies (these studies are excluded from the gates; listed in
+`artifacts/phase0a/pilot_studies.txt`):**
+- **Pilot 1 (job 33403).** Single-start MI drifted to "corrections" of up to 48 mm / 20°. The QC overlays showed the
+  DICOM placement visibly correct: on partially overlapping thick-slice stacks, MI slides toward background.
+  - Fix: metric limited to a 45 mm sphere around the study centre, on fixed foreground at least 10 mm inside the moving
+    stack.
+  - Fix: multi-start search, with the unmoved placement as a candidate.
+  - Fix: an overlap guard rejects candidates that lose more than 20% of their in-stack samples.
+- **Pilot 2 (job 33404).** The optimizer used a random 30% sample but selection used all voxels. With mismatched
+  objectives the unmoved placement won on a technicality. Fix: one objective, all mask voxels.
+- **Pilot 3 (job 33406) and benchmark (jobs 33416, cancelled; 33420).** An MI profile around the DICOM placement is
+  smooth and peaked within about 1–2 mm, with no grid-alignment spike. But regular-step gradient descent stalls in the
+  rotation–translation valley, ending 1.7–25 mm from the minimum with worse MI than where it started. Conjugate-gradient
+  line search is erratic, ending 1.4–72 mm off.
+  - Powell returned to each pair's MI minimum after every injected error (0.00 mm / 0.00°, 8–14 s per run).
+  - Fix: Powell.
+  - In these pilot pairs the MI minimum lies 1.0–1.6 mm / 0.4–0.7° from the DICOM placement.
+
+**Gates (fixed in the plan before any full-run number):**
+- G1 optimizer precision: injected errors on cross-plane pairs recovered within 1 mm and 0.5° in ≥ 95%, per level.
+- G2 cycle consistency: median residual of Sag → Cor → Ax → Sag triangles ≤ 1 mm.
+- G3 raw geometry: ≥ 97% of cross-plane pairs need a correction ≤ 3 mm (max over probes) and ≤ 2°.
+- G1 and G2 must pass for the audit to count.
+- Then, if G3 passes: registration-free. If G3 fails: train with misregistration noise drawn from the measured
+  cross-plane corrections.
+- Same-plane pairs and mixed triangles are reported, not gated.
+
+**Launch.** Full run, 145 + 5 studies in 30 shards on ZEN4 (`safe_sbatch.py`): **job 33421** (array 0-29). Report:
+`python scripts/phase0a_report.py artifacts/phase0a artifacts/phase0a/pilot_studies.txt`.
