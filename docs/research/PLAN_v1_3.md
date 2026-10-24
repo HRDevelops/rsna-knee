@@ -4,6 +4,13 @@ Supersedes `PLAN_v1_2.md` after review round 3 (2026-10-24). The reviewer green-
 eight are applied here. Nothing has been trained. The only new measurement is the corrected header audit (§1.3).
 Every number is measured in this repo (source given) or marked as an estimate.
 
+**Final amendments (review round 4, 2026-10-24: "GO, start Phase 0A"; no further plan review):**
+1. Phase 0A gates apply to cross-plane pairs and to triangles with one series from each plane. Same-plane pairs and
+   mixed triangles are reported but not gated (§5).
+2. $\beta_h$ gets exact projected optimization: its own SGD without momentum (§2.4).
+3. The reference cache has no added prefilter (exact affine + linear). Ordinary and acquisition-aware anti-aliasing
+   are explicit ablations (§4).
+
 **Scientific question.** Does representing anisotropic MRI observations by their physical acquisition footprint
 improve cross-plane fusion?
 
@@ -180,14 +187,17 @@ $$a_{jk}=\frac{\mathbf q_j^\top\mathbf k_k}{\sqrt d}\;+\;b_h\,\mathbb 1[s_j=s_k]
   - $\beta_h\ge0$ is a free parameter, initialized at exactly 0 and projected to $\beta_h\leftarrow\max(\beta_h,0)$ after
     each optimizer step.
   - Its gradient at 0 is live, so geometry can switch on.
-  - It sits in the head group (lr 1e-3, no weight decay).
+  - It has its own optimizer: projected SGD without momentum, $\beta_h\leftarrow\max(0,\beta_h-\eta\,\partial L/\partial\beta_h)$.
+    The projection is then exact; AdamW plus clamping would keep stale momentum pointing outside the feasible region.
+  - $\eta$ is fixed before Phase 1 from a gradient-scale check ($\beta$ must be able to move within the first epoch),
+    never from AUC.
   - Why not a small softplus init: cross-plane pairs 60–100 mm apart at 6×6 have $d^2\approx30$–145. There,
     $\mathrm{softplus}(-4)=0.018$ gives −0.3 to −1.3 logits and $\mathrm{softplus}(-5)$ gives −0.1 to −0.5, so $G$ would
     not start as $B_{\text{cap}}$.
   - With $\beta_h=0$ and $W_p=0$, $G$, $G_{+\text{IPE}}$ and $B_{\text{cap}}$ are identical at step 0.
 - **Common random numbers.** Separate generators for shared-weight initialization and for data order, window sampling
   and augmentation, so the extra geometry parameters never shift either stream.
-  - Unit test: identical logits at step 0 on a fixed batch.
+  - Unit test: identical logits at step 0 on a fixed batch ($\max|z_G-z_B|<10^{-6}$ in fp32).
   - Unit test: identical batch composition across arms for the first 100 steps.
 - **Validity.** Keys with $v_k<0.5$ are masked for every query and excluded from the readout, the same way in all arms.
   This is 1.8% of tokens at 6×6.
@@ -258,12 +268,17 @@ synovitis (paired bootstrap).
 
 - **Grid.** 160 mm field of view at 384 px = 0.4167 mm/px, exp018's pixel size. Its central 336 px is exp018's 140 mm crop
   on exp018's own grid.
-- **Resampler (default).** Standard anti-aliasing from PixelSpacing (round 2's rule), then linear interpolation through
-  $A_s$; no prefilter when upsampling:
-  $$\sigma=0.5\sqrt{s^2-1}\ \text{source pixels},\qquad s=t/\text{PixelSpacing},\quad t=0.4167\ \text{mm}.$$
-  - It is deterministic and needs no MR reconstruction model.
-  - For zero-filled series it adds a small extra blur, which rung B1 measures.
-- **Acquisition-aware prefilter** (σ from nominal matrix spacing): an ablation (B1′), run only if B1 is not null.
+- **Resampler (default): exact affine + linear interpolation through $A_s$, no added prefilter.**
+  - This is the closest reproduction of exp018 (`zoom`, order 1), with an exact affine.
+  - Linear interpolation already low-passes. Extra blur is an explicit, tested choice, not part of the reference cache.
+  - Reason: about 70% of series are reconstructed finer than their acquisition matrix (§1.3), so a filter driven by
+    PixelSpacing would mostly blur interpolated pixels.
+- **Anti-aliasing ablations** (temporary exp018-layout caches, ≈ 30 GB each, deleted afterwards):
+  - $B1_{\text{AA}}$: Gaussian prefilter $\sigma=(s-1)/2$ source pixels, scikit-image's default, with
+    $s=t/\text{PixelSpacing}$ and $t=0.4167$ mm.
+  - $B1_{\text{acq}}$ (optional): $\sigma$ from the nominal acquisition-matrix spacing.
+  - Round 2's $\sigma=0.5\sqrt{s^2-1}$ is a Gaussian-PSF-matching heuristic, not a library default. It smooths
+    considerably more: 0.45 vs 0.17 px at $s=1.34$.
 - **Slices.** Every series and every native slice: 819,078 × 384² B ≈ 120 GB uint8. The default window range stays 6–94%.
 - **Normalization.** Percentiles 1 and 99.5 per series, over its in-span slices inside the central 140 mm.
 - **Per-slice record.** IPP, IOP, spacing, thickness, $A_s$ (including the mirror), native extent (for validity),
@@ -277,7 +292,8 @@ synovitis (paired bootstrap).
 | Rung | Change (one at a time) | Prediction |
 |---|---|---|
 | B0 | exp018 as trained. Already exists (exp018 and exp021 fold 0) | — |
-| B1 | Cache v2 pixels (default resampler); same series, slices and windows; 140 mm crop | \|Δ\| < 0.002 |
+| B1 | Cache v2 pixels (exact affine + linear, no added prefilter); same series, slices and windows; 140 mm crop | \|Δ\| < 0.002 |
+| $B1_{\text{AA}}$ (ablation) | B1 + anti-aliasing, $\sigma=(s-1)/2$ | Adopted only if it raises the 2-seed mean by > 0.004; otherwise reported only |
 | B2 | + native-adjacent windows from all in-span slices of the same 5 series; exp018's plane mix (51.9 / 29.6 / 18.5%) | No sign predicted |
 | B3 | + every series (within-plane $1/N$); same plane mix | No sign predicted |
 | B4 | + plane-balanced budget (1/3 each) | No sign predicted |
@@ -285,13 +301,14 @@ synovitis (paired bootstrap).
 
 - **Freeze rule.** Keep each rung unless it lowers the 2-seed mean by more than 0.004 (twice the mean seed gap). A
   rejected rung is reverted.
-- **If B1 is not null.** Split it into exact affine without prefilter vs prefilter, and test B1′.
+- **If B1 is not null.** Split it into its remaining parts: exact affine vs `zoom` grid mapping, and the normalization
+  range.
 
 ## 5. Phases and gates
 
 | Phase | Content | Gate |
 |---|---|---|
-| **0A Geometry validity** | 150 studies, CPU. Pose graph over one series per plane family (10 pairs and 10 triangles per study). 6-DOF Mattes MI with SimpleITK, starting from the DICOM transform. Injected errors of 5 mm / 3° and 10 mm / 5°. Residuals in mm and in $d$ at 6×6 | **Optimizer precision:** injections recovered within 1 mm / 0.5° in ≥ 95% of cases; median cycle residual ≤ 1 mm. **Raw DICOM geometry:** if ≥ 97% of pairs need corrections ≤ 3 mm / 2°, stay registration-free and mark the rest (no geometric bias for their cross-plane pairs). Otherwise train with misregistration noise drawn from the measured residuals. **Never on the hidden test** (notebook budget) |
+| **0A Geometry validity** | 150 studies, CPU. Pose graph over one series per plane family (10 pairs and 10 triangles per study). 6-DOF Mattes MI with SimpleITK, starting from the DICOM transform. Injected errors of 5 mm / 3° and 10 mm / 5°. Residuals in mm and in $d$ at 6×6 | **G1 precision:** injected errors on cross-plane pairs recovered within 1 mm / 0.5° in ≥ 95% at each level. **G2 cycles:** median residual of Sag → Cor → Ax → Sag triangles ≤ 1 mm. **G3 raw geometry:** ≥ 97% of **cross-plane** pairs need corrections ≤ 3 mm and ≤ 2° (max over 9 probe points) → registration-free, with pairs over tolerance marked (no geometric bias for them). Otherwise train with misregistration noise drawn from the measured cross-plane corrections. Same-plane pairs and mixed triangles are reported, not gated. G1 and G2 must pass for the audit to count. **Never on the hidden test** (notebook budget). Code: `scripts/phase0a_registration.py`, `scripts/phase0a_report.py`, synthetic check `tests/test_phase0a_geometry.py` |
 | **0B Cache v2 + ladder** | §4 | Unit tests pass; ladder frozen |
 | **0C Grid and inference mode** | $B_{\text{cap}}$ at 4×4 / 6×6 / 12×12, fold 0 × 2 seeds; each run evaluated both dense and bagged | Choose grid and mode by $B_{\text{cap}}$ fold-0 validation, then **freeze for all arms**. $G$ under the other mode or grids is reported only as sensitivity |
 | **1A/1B Screening** | $G$ vs $B_{\text{cap}}$ (paired seeds 42/43, fold 0); mechanism arms $G_{+\text{IPE}}$, $G_{\text{all-series}}$, $G_{k\text{NN}}$ (descriptive) | **Stop** if both paired seeds have $\Delta_{\text{geo}}\le0$ **and** mean ≤ −0.002, or if the donor swap moves $G$ by < 0.001 in both seeds. **Go** if both seeds > 0, mean ≥ +0.002 and the donor swap ≥ 0.001 in both. **Otherwise** run fold 1 with seeds 42/43 and continue only if the 4-run mean is > 0 and the donor swap shows geometry is used |
