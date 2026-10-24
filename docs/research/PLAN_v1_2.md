@@ -1,3 +1,12 @@
+> **Superseded by `PLAN_v1_3.md` (2026-10-24, after review round 3).** Kept unchanged below as the record of what was
+> reviewed. Known issues in this version:
+> - its audit script still carried the old 0.365 mm grid and called matrix spacing "true acquired resolution";
+> - the cross-series bias mixes same-plane and cross-plane effects;
+> - each arm chose its own inference mode (a confound);
+> - padding was not masked;
+> - "about half the series need padding at 160 mm" is wrong (28.5%);
+> - public/private splits were called replicates, and proxy-label OOF was called conservative.
+
 # Research plan v1.2 — acquisition-support-aware cross-plane fusion for multi-planar knee MRI (draft for review)
 
 Supersedes `PLAN_v1_1.md` after review round 2 (2026-10-24). Nothing has been trained. The only new measurement is a
