@@ -418,6 +418,9 @@ def main() -> None:
                     traceback.print_exc()
         print(f"[{si + 1}/{len(mine)}] {u[-12:]} families={len(fams)} {time.time() - t0:.0f}s "
               f"(total {time.time() - t_start:.0f}s)", flush=True)
+        # save after every study, so a time limit loses at most one study (shard 2 of job 33421 lost four)
+        pd.DataFrame(pair_rows).to_parquet(out / f"pairs_{a.shard:02d}.parquet")
+        pd.DataFrame(series_rows).to_parquet(out / f"series_{a.shard:02d}.parquet")
     pd.DataFrame(pair_rows).to_parquet(out / f"pairs_{a.shard:02d}.parquet")
     pd.DataFrame(series_rows).to_parquet(out / f"series_{a.shard:02d}.parquet")
     print(f"shard {a.shard}: {len(mine)} studies, {len(pair_rows)} registrations, {time.time() - t_start:.0f}s")
