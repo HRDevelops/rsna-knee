@@ -62,7 +62,7 @@ def run_model(model, b, res, dtype, gain=None):
         gg = model.grid * model.grid
         sh = lambda t: t.reshape(B * P, K, *t.shape[2:])                  # noqa: E731
         logits = model(feats.reshape(B * P, K * gg, -1), sh(b["slot"]), sh(b["plane"]), sh(b["pos"]),
-                       sh(b["meta"]), sh(b["valid"]))
+                       sh(b["meta"]), sh(b["valid"]), mu=sh(b["mu"]), sigma=sh(b["sigma"]))
     return logits.float().view(B, P, -1)
 
 
@@ -80,6 +80,23 @@ def predict(model, loader, res, device, dtype, max_sec=None):
     return pd.DataFrame(rows)
 
 
+def donor_map(target_u, pool_u, man, final_side):
+    """PHASE1_PREREG s3: donor = a training-fold study with the same set of planes and the same side, nearest in
+    total slice count (ties: lowest UID)."""
+    g = man.groupby("study_uid")
+    info = {u: (frozenset(x.plane), str(final_side.get(u)), int(x.n_slices.sum())) for u, x in g}
+    pool = sorted(u for u in pool_u if u in info)
+    out = {}
+    for u in target_u:
+        if u not in info:
+            continue
+        pl, sd, n = info[u]
+        cands = [v for v in pool if info[v][0] == pl and info[v][1] == sd and v != u]
+        if cands:
+            out[u] = min(cands, key=lambda v: (abs(info[v][2] - n), v))
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", type=Path, required=True)
@@ -88,6 +105,8 @@ def main():
     ap.add_argument("--max-hours", type=float, default=5.5)
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--beta-grad-probe", type=int, default=0,
+                    help="PHASE1_PREREG s2: run N training steps (no evaluation), log |dL/dbeta|, print eta_beta, exit")
     a = ap.parse_args()
     cfg = expand_env(yaml.safe_load(a.config.read_text()))
     set_seed(cfg["seed"])
@@ -118,9 +137,12 @@ def main():
     print(f"fold {a.fold}: train {len(train_u)} | val {len(val_u)} | gold {len(gold_u)} | grid {g} | {d['v2']}",
           flush=True)
 
-    def mk(u, mode, lab=True):
+    geom = m.get("geometry", "none")
+
+    def mk(u, mode, lab=True, donor=None):
         return TokenV2Dataset(u, d["cache_dir"], man, labels if lab else None, final_side, bilateral,
-                              mode == "train", k, grid=g, mode=mode, n_bags=m.get("n_bags", 8), **d["v2"])
+                              mode == "train", k, grid=g, mode=mode, n_bags=m.get("n_bags", 8),
+                              geometry=geom != "none", donor=donor, **d["v2"])
     train_loader = DataLoader(mk(train_u, "train"), batch_size=bs, shuffle=True, num_workers=a.workers,
                               collate_fn=collate_tokens, drop_last=True, persistent_workers=a.workers > 0,
                               pin_memory=True)
@@ -132,9 +154,13 @@ def main():
     lossf = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(np.clip((1 - prev) / prev, 1, 10), dtype=torch.float32,
                                                          device=device))
     model = TokenMIL(m["arch"], grid=g, d=m.get("d", 384), heads=m.get("heads", 8), layers=m.get("layers", 2),
-                     drop=m.get("head_dropout", 0.2), grad_checkpointing=m.get("grad_checkpointing", True)).to(device)
+                     drop=m.get("head_dropout", 0.2), grad_checkpointing=m.get("grad_checkpointing", True),
+                     geometry=geom).to(device)
     bb = [p for n, p in model.named_parameters() if n.startswith("backbone.")]
-    head = [p for n, p in model.named_parameters() if not n.startswith("backbone.") and p.requires_grad]
+    head = [p for n, p in model.named_parameters()
+            if not n.startswith("backbone.") and n != "beta" and p.requires_grad]
+    # beta: projected SGD without momentum or weight decay at a constant, pre-registered eta (PHASE1_PREREG s2)
+    beta_opt = torch.optim.SGD([model.beta], lr=float(m["eta_beta"]), momentum=0.0)         if model.beta is not None and not a.beta_grad_probe else None
     opt = torch.optim.AdamW([{"params": bb, "lr": t["bb_lr"]}, {"params": head, "lr": t["head_lr"]}],
                             weight_decay=t["weight_decay"])
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=[t["bb_lr"], t["head_lr"]],
@@ -149,6 +175,7 @@ def main():
         topk = json.loads(topk_path.read_text()) if topk_path.exists() else []
         print(f"resumed at epoch {start}", flush=True)
     t_start = time.time()
+    probe = []
     for ep in range(start, epochs):
         model.train()
         tot, nb, t0 = 0.0, 0, time.time()
@@ -158,17 +185,34 @@ def main():
             logits = run_model(model, b, m["res"], dtype, gain)[:, 0]
             loss = lossf(logits, b["labels"])
             opt.zero_grad(set_to_none=True)
+            if model.beta is not None:
+                model.beta.grad = None
             if not torch.isfinite(loss):
                 print("non-finite loss; skipped", flush=True)
                 sched.step()
                 continue
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), t["grad_clip"])
+            if a.beta_grad_probe:
+                probe.append(model.beta.grad.detach().abs().flatten().cpu().numpy())
+                model.beta.grad = None                           # probe: beta stays exactly 0
+                if len(probe) >= a.beta_grad_probe:
+                    med = float(np.median(np.concatenate(probe)))
+                    eta = 0.5 / (len(train_loader) * med) if med > 0 else float("nan")
+                    print(f"BETA PROBE: {len(probe)} steps, steps/epoch {len(train_loader)}, median |dL/dbeta| "
+                          f"{med:.3e}, per layer/head medians {np.median(np.stack(probe), 0).round(6).tolist()} "
+                          f"-> eta_beta = 0.5 / (steps_per_epoch x median) = {eta:.4g}", flush=True)
+                    return
+            torch.nn.utils.clip_grad_norm_([p for n, p in model.named_parameters() if n != "beta"], t["grad_clip"])
             opt.step()
             sched.step()
+            if beta_opt is not None:
+                beta_opt.step()
+                with torch.no_grad():
+                    model.beta.clamp_(min=0.0)                    # projection onto beta >= 0
             tot, nb = tot + loss.item(), nb + 1
         val_auc, _ = macro_auc(predict(model, bag(val_u), m["res"], device, dtype), val_truth)
-        hist.append({"epoch": ep, "loss": tot / max(nb, 1), "val_auc_bagged": val_auc, "sec": time.time() - t0})
+        hist.append({"epoch": ep, "loss": tot / max(nb, 1), "val_auc_bagged": val_auc, "sec": time.time() - t0,
+                     "beta": None if model.beta is None else model.beta.detach().cpu().tolist()})
         print(f"epoch {ep}: loss {tot / max(nb, 1):.4f} | fold-val macro-AUC (bagged) {val_auc:.4f} | "
               f"{time.time() - t0:.0f}s", flush=True)
         if not a.smoke:
@@ -190,11 +234,17 @@ def main():
                                                    for e in topk]))
         torch.save({"model": model.state_dict(), "topk": topk}, exp_dir / "best.pt")
     summary = {"experiment": cfg["experiment"], "fold": a.fold, "grid": g, "epochs_completed": len(hist)}
-    for mode, mkl in (("bagged", bag), ("dense", dense)):
+    evals = [("bagged", bag), ("dense", dense)]
+    if geom != "none":                                   # donor-swap control (PHASE1_PREREG s3), dense, inference only
+        donor = donor_map(val_u + gold_u, train_u, man, final_side)
+        evals.append(("dense_donor", lambda u: DataLoader(mk(u, "dense", donor=donor), batch_size=1, num_workers=4,
+                                                          collate_fn=collate_tokens)))
+        summary["beta"] = json.dumps(model.beta.detach().cpu().tolist())
+    for mode, mkl in evals:
         try:
             torch.cuda.reset_peak_memory_stats()
             vdf = predict(model, mkl(val_u), m["res"], device, dtype,
-                          max_sec=m.get("dense_max_sec_per_study", 3.0) if mode == "dense" else None)
+                          max_sec=m.get("dense_max_sec_per_study", 3.0) if mode.startswith("dense") else None)
             gdf = predict(model, mkl(gold_u), m["res"], device, dtype)
             vauc, vper = macro_auc(vdf, val_truth)
             gauc, _ = macro_auc(gdf, gold_truth)

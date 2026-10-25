@@ -3335,3 +3335,20 @@ Full text: docs/research/PHASE1_PREREG.md.
 - Screening, escalation and confirmation exactly as PLAN_v1_3 s5, with the donor swap defined explicitly.
 - G_jitter (d ~ U(0, 0.75), training only): secondary, never a rescue.
 - The 40-pair blinded review is descriptive only.
+
+## 2026-10-26 - Phase 1: pre-launch tests passed; eta_beta fixed by the pre-registered probe (before any G metric)
+
+**Tests** (tests/test_phase1_geometry.py, real cache-v2 data):
+- 1,500 windows: footprints reproject exactly through the cache-v2 affine; mirrored cells are consistent; Sigma is
+  positive definite.
+- Paired arms draw identical windows and batches.
+- The donor swap changes only mu and Sigma.
+- At beta = 0, max |z_G - z_Bcap| = 0.0 in fp32 with identical shared weights; beta > 0 changes the logits.
+- 728 padding-masked tokens have no influence on the output.
+
+**Probe.** 50 training steps, fold 0, seed 42, beta held at 0, no evaluation.
+- Median |dL/dbeta| = 5.538e-3 over 16 layer x head entries (range 0.0037 to 0.0070); 433 steps per epoch.
+- eta_beta = 0.5 / (433 x 5.538e-3) = **0.2085**, written into configs/p1_graw_s42.yaml and p1_graw_s43.yaml.
+  Not to be changed.
+
+Launch: G_raw fold 0, seeds 42 / 43. Comparator: p0c_g6_s42 / p0c_g6_s43 (dense).

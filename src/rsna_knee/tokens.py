@@ -52,8 +52,13 @@ class Block(nn.Module):
 
 class TokenMIL(nn.Module):
     def __init__(self, arch="coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k", grid=6, d=384, heads=8, layers=2,
-                 n_targets=12, drop=0.2, pretrained=True, grad_checkpointing=True):
+                 n_targets=12, drop=0.2, pretrained=True, grad_checkpointing=True, geometry="none", eps=1.0):
         super().__init__()
+        assert geometry in ("none", "cross_plane")
+        self.geometry, self.eps = geometry, eps
+        # beta_h >= 0 per layer and head, EXACTLY 0 at init (PHASE1_PREREG s2); projected SGD in the trainer.
+        # Created before any randomly initialized module and without RNG use, so B_cap and G share every init draw.
+        self.beta = nn.Parameter(torch.zeros(layers, heads)) if geometry != "none" else None
         import timm
         self.backbone = timm.create_model(arch, pretrained=pretrained, num_classes=0, global_pool="")
         if grad_checkpointing:
@@ -90,7 +95,26 @@ class TokenMIL(nn.Module):
             outs.append(F.adaptive_avg_pool2d(f, self.grid).flatten(2).transpose(1, 2))   # [n, g*g, C]
         return torch.cat(outs).view(B, K * self.grid * self.grid, -1)
 
-    def forward(self, feats, slot, plane, pos, meta, valid, extra_bias=None):
+    def footprint_d2(self, mu, sigma, plane, chunk=256):
+        """Squared Mahalanobis footprint distance between all token pairs (fp32) and the cross-plane mask.
+        mu [B, K, g, g, 3]; sigma [B, K, 3, 3] (one covariance per window); plane [B, K]."""
+        B, K = mu.shape[:2]
+        gg = self.grid * self.grid
+        m = mu.float().reshape(B, K * gg, 3)
+        S = sigma.float()
+        Minv = torch.linalg.inv(S[:, :, None] + S[:, None, :] + self.eps * torch.eye(3, device=mu.device))  # [B,K,K,3,3]
+        win = torch.arange(K, device=mu.device).repeat_interleave(gg)
+        N = K * gg
+        d2 = torch.empty(B, N, N, device=mu.device)
+        for s in range(0, N, chunk):
+            D = m[:, s:s + chunk, None, :] - m[:, None, :, :]                       # [B, c, N, 3]
+            Mi = Minv[:, win[s:s + chunk]][:, :, win]                              # [B, c, N, 3, 3]
+            d2[:, s:s + chunk] = torch.einsum("bcnx,bcnxy,bcny->bcn", D, Mi, D)
+        pt = plane.repeat_interleave(gg, dim=1)
+        cross = (pt[:, :, None] != pt[:, None, :])
+        return d2, cross
+
+    def forward(self, feats, slot, plane, pos, meta, valid, extra_bias=None, mu=None, sigma=None):
         """feats [B, N, C] (N = K*g*g); per-window slot/plane/pos/meta [B, K(, M)]; valid [B, K, g, g]."""
         B, N, _ = feats.shape
         gg = self.grid * self.grid
@@ -106,8 +130,15 @@ class TokenMIL(nn.Module):
         if extra_bias is not None:
             bias = bias + extra_bias
         bias = bias.masked_fill(~keep[:, None, None, :], float("-inf"))
-        for blk in self.blocks:
-            x = blk(x, bias)
+        geo = None
+        if self.geometry == "cross_plane":
+            d2, cross = self.footprint_d2(mu, sigma, plane)
+            geo = (d2 * cross)[:, None]                                              # [B, 1, N, N], fp32
+        for li, blk in enumerate(self.blocks):
+            if geo is None:
+                x = blk(x, bias)
+            else:
+                x = blk(x, bias.float() - 0.5 * self.beta[li].view(1, -1, 1, 1) * geo)
         h = self.norm(x)
         a = self.att(h).masked_fill(~keep[..., None], -1e4)
         a = torch.softmax(a.float(), dim=1).to(h.dtype)

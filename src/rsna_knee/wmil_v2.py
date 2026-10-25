@@ -71,7 +71,9 @@ def load_manifest_v2(manifest_dir: Path) -> pd.DataFrame:
                         tag_laterality=tag, spacing=float(np.median(sp)) if len(sp) else 3.0,
                         slice_ok=m["slice_ok"], rows=int(m["rows"]), cols=int(m["cols"]), aff=m["aff"],
                         field=num("MagneticFieldStrength"), tr=num("RepetitionTime"), te=num("EchoTime"),
-                        is3d=float(str(m.get("MRAcquisitionType") or "").upper() == "3D")))
+                        is3d=float(str(m.get("MRAcquisitionType") or "").upper() == "3D"),
+                        ipp=ipp, iop=iop, ps_row=float(m["ps_row"]), ps_col=float(m["ps_col"]),
+                        thickness=num("SliceThickness")))
     g = pd.DataFrame(geo, index=df.index)
     return pd.concat([df.drop(columns=["meta"]), g], axis=1)
 
@@ -230,10 +232,55 @@ class TokenV2Dataset(WMILv2Dataset):
     [K, g, g] = share of each token cell that is real image (plan s2.4). Modes: train (one sampled pass), 'bagged'
     (R sampled passes with fixed seeds, stacked as [R*K, ...] with pass ids) or 'dense' (all windows, one pass)."""
 
-    def __init__(self, *args, grid: int = 6, mode: str = "train", n_bags: int = 8, **kw):
+    def __init__(self, *args, grid: int = 6, mode: str = "train", n_bags: int = 8, geometry: bool = False,
+                 donor: dict | None = None, **kw):
         super().__init__(*args, **kw)
         self.grid, self.mode, self.n_bags = grid, mode, n_bags
+        self.geometry, self.donor = geometry, donor or {}
         self._valid_cache = {}
+
+    # ------------------------------------------------------------------ footprints (PHASE1_PREREG s2)
+    def _geom_source(self, uid, r):
+        """The series whose geometry is used for series r of study uid: itself, or (donor swap) the donor study's
+        series of the same plane, paired in slice-count order and cycling."""
+        dn = self.donor.get(uid)
+        if dn is None:
+            return r
+        mine = sorted([x for x in self.by_study[uid] if x["plane"] == r["plane"]], key=lambda x: -x["n_slices"])
+        theirs = sorted([x for x in self.by_study[dn] if x["plane"] == r["plane"]], key=lambda x: -x["n_slices"])
+        if not theirs:
+            return r
+        k = [x["series_uid"] for x in mine].index(r["series_uid"])
+        return theirs[k % len(theirs)]
+
+    def _footprint(self, uid, r, trip, mirror):
+        """Cell-centre means mu [g, g, 3] (mm, patient LPS) and one covariance Sigma [3, 3] for the window."""
+        gr = self._geom_source(uid, r)
+        n_own, n_g = max(int(r["n_slices"]) - 1, 1), max(int(gr["n_slices"]) - 1, 1)
+        idx = [int(round(t * n_g / n_own)) for t in trip] if gr is not r else list(trip)
+        iop = np.asarray(gr["iop"], float)
+        rv, cv = iop[:3] / np.linalg.norm(iop[:3]), iop[3:] / np.linalg.norm(iop[3:])
+        nv = np.cross(rv, cv)
+        a_c, b_c, a_r, b_r = gr["aff"]
+        size = 384 if self.crop == "f160" else CENTRAL
+        off = 0 if self.crop == "f160" else CENTRAL_OFF
+        cell = size / self.grid
+        ctr = (np.arange(self.grid) + 0.5) * cell - 0.5               # rendered pixel coordinate of cell centres
+        u_r, v_r = np.meshgrid(ctr, ctr)                            # [g, g] (row index = v)
+        if mirror:
+            u_r = (size - 1) - u_r
+        u = a_c * (u_r + off) + b_c
+        v = a_r * (v_r + off) + b_r
+        ipp = np.asarray(gr["ipp"], float)
+        mus = np.stack([ipp[min(t, len(ipp) - 1)] + u[..., None] * gr["ps_col"] * rv + v[..., None] * gr["ps_row"] * cv
+                        for t in idx])                              # [3, g, g, 3]
+        mu = mus.mean(0)
+        ell = 160.0 / self.grid if self.crop == "f160" else 140.0 / self.grid
+        tau = gr["thickness"] if np.isfinite(gr["thickness"]) else gr["spacing"]
+        sig_l = ell ** 2 / 12 * (np.outer(rv, rv) + np.outer(cv, cv)) + tau ** 2 / 12 * np.outer(nv, nv)
+        cen = mus[:, 0, 0] - mus[:, 0, 0].mean(0)                   # slice offsets (identical for every cell)
+        sig = sig_l + (cen[:, :, None] * cen[:, None, :]).mean(0)
+        return mu.astype(np.float32), sig.astype(np.float32)
 
     def _validity(self, r, mirror):
         key = (r["series_uid"], mirror)
@@ -249,9 +296,13 @@ class TokenV2Dataset(WMILv2Dataset):
         return self._valid_cache[key]
 
     def _render(self, uid, plan, rng):
-        vols, wins, slot, plane, pos, meta, val = {}, [], [], [], [], [], []
+        vols, wins, slot, plane, pos, meta, val, mus, sigs = {}, [], [], [], [], [], [], [], []
         perm = rng.permutation(16)
         for sid, trip, mirror, si, r, p in plan:
+            if self.geometry:
+                mu, sg = self._footprint(uid, r, trip, mirror)
+                mus.append(mu)
+                sigs.append(sg)
             if sid not in vols:
                 vols[sid] = np.load(self.cache_dir / uid / f"{sid}.npy", mmap_mode="r")
             w = np.stack([vols[sid][t] for t in trip])
@@ -265,8 +316,10 @@ class TokenV2Dataset(WMILv2Dataset):
             pos.append(p)
             meta.append(series_meta_vector(r))
             val.append(self._validity(r, mirror))
+        geo = (np.stack(mus), np.stack(sigs)) if self.geometry else \
+            (np.zeros((len(wins), self.grid, self.grid, 3), np.float32), np.zeros((len(wins), 3, 3), np.float32))
         return (np.stack(wins), np.array(slot, np.int64), np.array(plane, np.int64), np.array(pos, np.float32),
-                np.stack(meta), np.stack(val))
+                np.stack(meta), np.stack(val), geo[0], geo[1])
 
     def __getitem__(self, i):
         uid = self.uids[i]
@@ -281,8 +334,10 @@ class TokenV2Dataset(WMILv2Dataset):
         else:                                                    # dense
             parts = [self._render(uid, self._plan(i), np.random.default_rng(i))]
         out = {"uid": uid}
-        for k, name in enumerate(["windows", "slot", "plane", "pos", "meta", "valid"]):
+        for k, name in enumerate(["windows", "slot", "plane", "pos", "meta", "valid", "mu", "sigma"]):
             out[name] = torch.from_numpy(np.concatenate([p[k] for p in parts]))
+        if self.geometry:                                        # relative coordinates: centre on the study median
+            out["mu"] = out["mu"] - out["mu"].reshape(-1, 3).median(0).values
         out["pass_id"] = torch.from_numpy(np.concatenate([np.full(len(p[0]), b, np.int64) for b, p in enumerate(parts)]))
         if self.labels is not None:
             out["labels"] = torch.tensor([float(self.labels.loc[uid, f"{c}__probability"]) for c in wmil.TARGET_COLUMNS],
@@ -293,7 +348,8 @@ class TokenV2Dataset(WMILv2Dataset):
 def collate_tokens(batch):
     """Training / bagged batches have equal shapes; dense eval uses batch size 1."""
     out = {"uid": [b["uid"] for b in batch]}
-    for key in ("windows", "slot", "plane", "pos", "meta", "valid", "pass_id") + (("labels",) if "labels" in batch[0] else ()):
+    for key in ("windows", "slot", "plane", "pos", "meta", "valid", "mu", "sigma", "pass_id") + \
+            (("labels",) if "labels" in batch[0] else ()):
         out[key] = torch.stack([b[key] for b in batch])
     return out
 
