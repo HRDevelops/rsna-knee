@@ -3295,3 +3295,32 @@ invariant to swapping them).
 - Gold-58 plays no role in any 0C choice. The chosen $(g^*, m^*)$ is copied unchanged into $G$.
 - **ACL, for the record.** Phase 0B moved fold-0 ACL 0.943 → 0.924. It is documented with paired deltas and seed
   consistency once 0C exists; it does not change the pipeline.
+
+## 2026-10-25 — Phase 0C RESULT: frozen 6×6 grid, dense inference (by the pre-registered rules)
+
+$B_{\text{cap}}$ (token transformer without geometry) on the frozen B5 pipeline; fold 0; seeds 42 / 43; jobs
+33698–33703, about 2.1 h each. Selection by `scripts/phase0c_select.py`; gold-58 not read.
+
+| Grid | Bagged fold-val (s42 / s43, mean) | Dense fold-val (s42 / s43, mean) | Dense peak GPU memory |
+|---|---|---|---|
+| 4×4 | 0.9447 / 0.9444, 0.9446 | 0.9507 / 0.9498, 0.9503 | 10.2 GB |
+| 6×6 | 0.9508 / 0.9510, 0.9509 | 0.9541 / 0.9544, 0.9543 | 10.2 GB |
+| 12×12 | 0.9503 / 0.9517, 0.9510 | 0.9541 / 0.9553, 0.9547 | 53.7 GB (feasible, within 3 s/study) |
+
+**Selection.**
+- **Grid:** 4×4 is −0.0063 vs 6×6; 12×12 is +0.0001 (needs ≥ +0.004). → **6×6**.
+- **Mode on 6×6:** dense − bagged = **+0.0037 [+0.0013, +0.0068]**, from seed-averaged predictions, paired cluster
+  bootstrap, 879 studies / 672 clusters. → **dense**.
+- **Frozen for G: 6×6 tokens, dense inference.** Note: the dense / train density mismatch (§2.5) now applies to $G$. The
+  soft Mahalanobis bias, chosen over hard k-NN partly for this reason, stays the primary form.
+
+**Observations (descriptive, no action).**
+- $B_{\text{cap}}$ at its frozen setting (0.9543) is 0.0025 below the window-MIL $B_{\text{final}}$ = B5 (0.9568) on
+  fold 0. The token transformer does not by itself beat the practical baseline. $\Delta_{\text{geo}}$ is still measured
+  against $B_{\text{cap}}$, as pre-registered.
+- **ACL** (B0 → B5, per seed): s42 0.9533 → 0.9303 (−0.0230); s43 0.9317 → 0.9176 (−0.0141). The drop is
+  seed-consistent; logged, no intervention.
+
+**Before Phase 1.**
+- Pre-register the geometry-noise handling (primary $G$ with raw geometry and no augmentation; bounded-jitter arm).
+- Finish the 40-pair blinded geometry review.
