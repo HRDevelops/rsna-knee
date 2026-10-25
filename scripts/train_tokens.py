@@ -155,7 +155,7 @@ def main():
                                                          device=device))
     model = TokenMIL(m["arch"], grid=g, d=m.get("d", 384), heads=m.get("heads", 8), layers=m.get("layers", 2),
                      drop=m.get("head_dropout", 0.2), grad_checkpointing=m.get("grad_checkpointing", True),
-                     geometry=geom).to(device)
+                     geometry=geom, features=m.get("features", "final")).to(device)
     bb = [p for n, p in model.named_parameters() if n.startswith("backbone.")]
     head = [p for n, p in model.named_parameters()
             if not n.startswith("backbone.") and n != "beta" and p.requires_grad]

@@ -52,9 +52,11 @@ class Block(nn.Module):
 
 class TokenMIL(nn.Module):
     def __init__(self, arch="coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k", grid=6, d=384, heads=8, layers=2,
-                 n_targets=12, drop=0.2, pretrained=True, grad_checkpointing=True, geometry="none", eps=1.0):
+                 n_targets=12, drop=0.2, pretrained=True, grad_checkpointing=True, geometry="none", eps=1.0,
+                 features="final"):
         super().__init__()
-        assert geometry in ("none", "cross_plane")
+        assert geometry in ("none", "cross_plane") and features in ("final", "local")
+        self.features = features
         self.geometry, self.eps = geometry, eps
         # beta_h >= 0 per layer and head, EXACTLY 0 at init (PHASE1_PREREG s2); projected SGD in the trainer.
         # Created before any randomly initialized module and without RNG use, so B_cap and G share every init draw.
@@ -64,6 +66,13 @@ class TokenMIL(nn.Module):
         if grad_checkpointing:
             self.backbone.set_grad_checkpointing(True)
         c = self.backbone.num_features
+        if features == "local":
+            # PHASE2_LOCAL_PREREG: output of backbone.stages.1 (last MBConv stage, stride 8, 256 ch), i.e. before the
+            # first global-attention stage (stages.2, TransformerBlock2d). Stages 2-3 and the final norm are removed.
+            self.backbone.stages = self.backbone.stages[:2]
+            self.backbone.norm = nn.Identity()
+            c = self.backbone.stages[1].blocks[-1].conv3_1x1.out_channels if hasattr(
+                self.backbone.stages[1].blocks[-1], "conv3_1x1") else 256
         self.grid, self.heads = grid, heads
         self.proj = nn.Sequential(nn.LayerNorm(c), nn.Linear(c, d))
         self.plane_emb = nn.Embedding(3, d)

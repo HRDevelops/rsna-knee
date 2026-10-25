@@ -3393,3 +3393,11 @@ H1 is not supported at screening. Gold-58 was not used.
   requires all 160 answers.
 - **Pre-registration** for $B_{\text{local}}$ vs $G_{\text{local}}$ (features from `backbone.stages.1`, before the first
   global-attention stage): `docs/research/PHASE2_LOCAL_PREREG.md`. A STOP on the donor swap terminates the geometry line.
+
+## 2026-10-26 - Local follow-up: pre-launch tests passed; eta_beta fixed by the probe (before any metric)
+
+- tests/test_phase1_geometry.py with FEATURES=local: all checks pass (footprints, pairing, donor, identity at beta = 0
+  with max diff 0.0, padding).
+- Probe on G_local, seed 42, 50 steps: median |dL/dbeta| = 5.592e-3 -> **eta_beta = 0.2065**, written into
+  configs/p2_glocal_s42.yaml and p2_glocal_s43.yaml.
+- Launch: B_local and G_local, fold 0, seeds 42 / 43 (fresh paired runs).

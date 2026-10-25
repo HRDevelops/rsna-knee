@@ -36,6 +36,7 @@ MAN = load_manifest_v2(R / "artifacts/cache_manifests_v2")
 SIDE = pd.read_csv(R / "artifacts/final_side.csv").set_index("study_uid")["final_side"].to_dict()
 OPT = dict(series="all", slices="native", plane_mix="balanced", crop="f160")
 UIDS = sorted(MAN.study_uid.unique())[:30]
+FEAT = os.environ.get("FEATURES", "final")   # local: PHASE2_LOCAL_PREREG
 
 
 def ds(geometry=True, mode="train", donor=None, uids=UIDS):
@@ -45,14 +46,14 @@ def ds(geometry=True, mode="train", donor=None, uids=UIDS):
 
 def test_identity_at_beta0():
     torch.manual_seed(0)
-    b = TokenMIL(pretrained=False, grid=6, geometry="none", grad_checkpointing=False).eval()
+    b = TokenMIL(pretrained=False, grid=6, geometry="none", grad_checkpointing=False, features=FEAT).eval()
     torch.manual_seed(0)
-    g = TokenMIL(pretrained=False, grid=6, geometry="cross_plane", grad_checkpointing=False).eval()
+    g = TokenMIL(pretrained=False, grid=6, geometry="cross_plane", grad_checkpointing=False, features=FEAT).eval()
     sb, sg = b.state_dict(), g.state_dict()
     assert set(sg) - set(sb) == {"beta"} and all(torch.equal(sb[k], sg[k]) for k in sb), "shared init differs"
     item = ds(mode="dense")[0]
     K = item["windows"].shape[0]
-    feats = torch.randn(1, K * 36, b.backbone.num_features)
+    feats = torch.randn(1, K * 36, b.proj[1].in_features)
     args = [item[k][None] for k in ("slot", "plane", "pos", "meta", "valid")]
     with torch.no_grad():
         zb = b(feats, *args)
@@ -68,7 +69,7 @@ def test_identity_at_beta0():
 
 def test_padding_masked():
     torch.manual_seed(0)
-    g = TokenMIL(pretrained=False, grid=6, geometry="cross_plane", grad_checkpointing=False).eval()
+    g = TokenMIL(pretrained=False, grid=6, geometry="cross_plane", grad_checkpointing=False, features=FEAT).eval()
     with torch.no_grad():
         g.beta.fill_(0.3)
     for i in range(len(UIDS)):
@@ -79,7 +80,7 @@ def test_padding_masked():
         print("  padding: no padded token in the sample (skipped)")
         return
     K = item["windows"].shape[0]
-    feats = torch.randn(1, K * 36, g.backbone.num_features)
+    feats = torch.randn(1, K * 36, g.proj[1].in_features)
     args = [item[k][None] for k in ("slot", "plane", "pos", "meta", "valid")]
     bad = (item["valid"].flatten() < 0.5)
     f2 = feats.clone()
