@@ -3324,3 +3324,14 @@ $B_{\text{cap}}$ (token transformer without geometry) on the frozen B5 pipeline;
 **Before Phase 1.**
 - Pre-register the geometry-noise handling (primary $G$ with raw geometry and no augmentation; bounded-jitter arm).
 - Finish the 40-pair blinded geometry review.
+
+## 2026-10-26 - Phase 1 PRE-REGISTRATION committed (before any G validation number)
+
+Full text: docs/research/PHASE1_PREREG.md.
+- Frozen for every arm: B5 pipeline, 6x6 grid, dense inference, B_cap selection rules.
+- Primary model G_raw: cross-plane footprint bias only; raw DICOM geometry; no augmentation; no IPE.
+- beta: exactly 0 at init; projected SGD; eta_beta set by a fixed gradient-scale rule from a 50-step smoke run without
+  evaluation.
+- Screening, escalation and confirmation exactly as PLAN_v1_3 s5, with the donor swap defined explicitly.
+- G_jitter (d ~ U(0, 0.75), training only): secondary, never a rescue.
+- The 40-pair blinded review is descriptive only.
