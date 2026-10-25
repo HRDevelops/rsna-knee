@@ -3170,3 +3170,40 @@ no labels, no model.
 
 **Launch.** Full run, 145 + 5 studies in 30 shards on ZEN4 (`safe_sbatch.py`): **job 33421** (array 0-29). Report:
 `python scripts/phase0a_report.py artifacts/phase0a artifacts/phase0a/pilot_studies.txt`.
+
+## 2026-10-25 — Research Phase 0A RESULT: INCONCLUSIVE by the pre-registered rule (narrow); corrections ~1.7 mm
+
+All 30 shards. Shard 2 timed out at 3 h and was rerun as job 33518 with per-study saving. Gates on the 145 non-pilot
+studies (`python scripts/phase0a_report.py artifacts/phase0a artifacts/phase0a/pilot_studies.txt`).
+
+| Gate | Bar | Result |
+|---|---|---|
+| G1 injected 5 mm / 3° recovered (≤ 1 mm, ≤ 0.5°) | ≥ 95% | 96.8% (n = 1,020), pass |
+| G1 injected 10 mm / 5° | ≥ 95% | 94.1%, **fail** |
+| G2 all-three-plane cycle residual, median | ≤ 1 mm | 1.06 mm (n = 488), **fail** |
+| G3 cross-plane pairs within 3 mm and 2° | ≥ 97% | 80.8% (n = 1,020); counts only if G1 and G2 pass |
+
+**Corrections (cross-plane).**
+- Median 1.68 mm / 0.66°; p95 5.60 mm / 2.45°.
+- Footprint d: median 0.19, p95 0.64.
+- Gross (> 10 mm or > 5°): 2.6%.
+- 1.5 T 88.2% vs 3 T 69.4% within.
+- Same-plane pairs (reported only): 90.5% within, median 0.87 mm.
+
+**Post hoc, labelled as such.**
+- 2.5% of cross-plane pairs have multi-start disagreement. They carry 44% gross corrections and 32–40% injected-error
+  recovery.
+- On the stable 97.5%: G1 98.2% / 95.7%; gross 1.6%.
+- QC overlays of the four worst-flagged pairs show the DICOM placement aligned and the correction misplaced (informal).
+
+**Reading.**
+- The audit tool's own resolution is about 1 mm (cycles), so it cannot separate 1–2 mm of real inter-sequence motion
+  from MI bias.
+- The measured corrections are small at the footprint scale the method uses.
+
+**Proposal (`docs/research/PHASE0A_RESULTS.md`, awaiting the user).**
+- Keep the label "inconclusive". No re-tuning of the audit.
+- Take the plan's G3-fail branch: raw DICOM geometry plus training-time misregistration noise drawn from the measured
+  corrections.
+- Optional blinded visual check of about 40 pairs.
+- Then Phase 0B (GPU), only after the user's go-ahead.
