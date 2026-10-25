@@ -3352,3 +3352,33 @@ Full text: docs/research/PHASE1_PREREG.md.
   Not to be changed.
 
 Launch: G_raw fold 0, seeds 42 / 43. Comparator: p0c_g6_s42 / p0c_g6_s43 (dense).
+
+## 2026-10-26 — Phase 1 SCREENING RESULT (fold 0): STOP by the pre-registered rule (geometry not used)
+
+Jobs 33770 / 33771, about 2.2 h each; frozen 6×6, dense, B5; $\eta_\beta$ 0.2085.
+
+| Seed | $G_{\text{raw}}$ dense fold-val | $B_{\text{cap}}$ dense | $\Delta_{\text{geo}}$ | $G$ with donor geometry | $\Delta_{\text{swap}}$ |
+|---|---|---|---|---|---|
+| 42 | 0.9497 | 0.9541 | −0.0044 | 0.9497 | 0.0000 |
+| 43 | 0.9550 | 0.9544 | +0.0005 | 0.9550 | 0.0000 |
+
+**Rule.**
+- Mean $\Delta_{\text{geo}}$ is −0.0020. Not both seeds are ≤ 0, so the first stop clause does not fire.
+- $\Delta_{\text{swap}}$ < 0.001 in both seeds, so the second stop clause fires: "geometry is not used".
+- **Decision: STOP.** No fold-1 escalation, no confirmation, and no $G_{\text{jitter}}$ (which was conditional on
+  $G_{\text{raw}}$ passing).
+
+**Control mechanics** (`scripts/phase1_swap_check.py`; a mechanics check, not a metric search):
+- 878/879 val studies received a donor.
+- Donor plane layouts differ from the study's own by a median 25.9 mm (p90 48.5 mm) in relative plane-centre position.
+- Yet predictions moved by a mean |Δp| of 1.2e-4 / 1.3e-4; at most 5–7% of studies changed by more than 1e-3.
+- So the control works, and the trained model is essentially insensitive to footprint geometry.
+
+**Learned $\beta$.** All 16 per head stayed small, 0.003–0.05 (seed-42 max 0.050, seed-43 max 0.049).
+
+**Reading (descriptive, not tested).** With global-attention CoAtNet tokens and dense attention, the footprint term
+learned only a weak locality preference, and the decision does not depend on it. This is the pre-registered failure
+case for final-stage tokens. PLAN_v1_3 lists the local-stage-token experiment (CoAtNet stage-1 tokens, before the global
+attention stages) as the mechanism follow-up "if $G$ fails on final-stage tokens".
+
+H1 is not supported at screening. Gold-58 was not used.
