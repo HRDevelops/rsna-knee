@@ -3232,3 +3232,36 @@ mechanically. G1 and G2 missed narrowly; G3 (80.8% vs 97%) did not, but it is un
 - Field strength is a robustness stratum; a clustered descriptive regression comes first.
 - A 40-pair blinded visual check runs in parallel; it does not change the label.
 - Phase 0B: GO. Geometry-noise handling is pre-registered before Phase 1. Details: `docs/research/PHASE0A_RESULTS.md`.
+
+## 2026-10-25 — Phase 0B preprocessing ladder RESULT: no rung hurts; B5 frozen as the data pipeline
+
+**Setup.** Cache v2 (`data/cache_v2`, 113 GB): all 24,371 series and all native slices, 160 mm at 384 px, exact affine
+plus linear interpolation, no prefilter.
+- B1's windows reproduce exp018's one-to-one: 40 studies, 2,074 windows, min corr 0.986 (`scripts/check_wmil_v2.py`).
+- Ladder: exp018 architecture, training budget and schedule; fold 0; seeds 42 / 43.
+- Jobs 33604–33615, about 2.6 h each.
+- B0 = exp018 / exp021 fold 0.
+- Metric: fold-validation macro-AUC with top-3 averaging, the same metric as the measured seed noise (0.0020 mean / 0.0046
+  max).
+
+| Rung | Change | Fold-val macro-AUC (s42 / s43) | 2-seed mean | Δ vs previous rung | Gold-58 mean |
+|---|---|---|---|---|---|
+| B0 | exp018 | 0.9567 / 0.9547 | 0.9557 | — | 0.9035 |
+| B1 | Cache v2 pixels | 0.9562 / 0.9523 | 0.9542 | −0.0015 | 0.9056 |
+| B2 | + native-adjacent windows, all in-span slices | 0.9544 / 0.9551 | 0.9547 | +0.0005 | 0.9132 |
+| B3 | + every series | 0.9546 / 0.9566 | 0.9556 | +0.0009 | 0.9122 |
+| B4 | + plane-balanced budget | 0.9567 / 0.9568 | 0.9567 | +0.0011 | 0.9090 |
+| B5 | + 160 mm field, no resize | 0.9569 / 0.9567 | 0.9568 | +0.0001 | 0.9153 |
+
+**Reading.**
+- Every step is within the seed noise. The freeze rule (revert a rung only if it lowers the 2-seed mean by > 0.004)
+  keeps all of them, so **B5 is the frozen data pipeline** for $B_{\text{final}}$, $B_{\text{cap}}$ and $G$.
+- B1 matched its pre-registered prediction (|Δ| < 0.002).
+- B0 → B5 overall: macro +0.0011 (noise); gold-58 +0.012 (n = 58, noisy).
+- Per label (2-seed means, B0 → B5):
+  - ACL fell 0.943 → 0.924. The drop appears from B1 on and is largest from B2 (native windows).
+  - MCL (+0.012), Lateral Meniscus (+0.012), Contusion (+0.005) rose.
+- So the data changes reshuffle per-label strengths without moving macro. The ACL drop is noted for later; nothing is
+  changed for it now.
+- Dense evaluation now uses about 157 windows per study (exp018: 54).
+- Anti-aliasing ablation $B1_{\text{AA}}$: not run, since B1 is null and the reference keeps no prefilter.
