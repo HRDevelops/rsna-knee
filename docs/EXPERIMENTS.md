@@ -3382,3 +3382,14 @@ case for final-stage tokens. PLAN_v1_3 lists the local-stage-token experiment (C
 attention stages) as the mechanism follow-up "if $G$ fails on final-stage tokens".
 
 H1 is not supported at screening. Gold-58 was not used.
+
+## 2026-10-26 — Local-feature follow-up PRE-REGISTRATION; protocol deviation; beta interpretation corrected
+
+- **Correction to the Phase 1 entry.** Raw $\beta$ values (0.003–0.05) cannot be read as "a faint locality preference":
+  with $d^2$ of about 30–145, $\beta = 0.05$ gives biases of −0.75 to −3.6 logits. The evidence that geometry is unused
+  is the donor-swap insensitivity. A $\beta$-off diagnostic (job 33786) reports the actual bias distribution.
+- **Protocol deviation.** Phase 1 started before the 40-pair blinded review was rated. Harmless: the review is
+  descriptive only, and the STOP rests on the donor swap. It will be completed for the record, and the export now
+  requires all 160 answers.
+- **Pre-registration** for $B_{\text{local}}$ vs $G_{\text{local}}$ (features from `backbone.stages.1`, before the first
+  global-attention stage): `docs/research/PHASE2_LOCAL_PREREG.md`. A STOP on the donor swap terminates the geometry line.

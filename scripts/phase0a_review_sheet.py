@@ -138,7 +138,7 @@ function save(){{const s={{}};document.querySelectorAll('input:checked').forEach
 document.addEventListener('change',save);
 try{{const s=JSON.parse(localStorage.getItem('geomreview')||'{{}}');for(const k in s){{const e=document.querySelector(
  `input[name="${{k}}"][value="${{s[k]}}"]`);if(e)e.checked=true}}}}catch(e){{}} save();
-function exp(){{let c='pair,'+qs.join(',')+'\\n';for(const i of items){{c+=i+','+qs.map(q=>{{const e=document.querySelector(
+function exp(){{const miss=[];for(const i of items){{for(const q of qs){{if(!document.querySelector(`input[name="p${{i}}_${{q}}"]:checked`))miss.push('pair '+i+' '+q)}}}}if(miss.length){{alert('Review incomplete: '+miss.length+' of '+(items.length*qs.length)+' answers missing.\\n'+miss.slice(0,15).join('\\n')+(miss.length>15?'\\n...':'')+'\\n\\nNothing was exported.');return}}let c='pair,'+qs.join(',')+'\\n';for(const i of items){{c+=i+','+qs.map(q=>{{const e=document.querySelector(
  `input[name="p${{i}}_${{q}}"]:checked`);return e?e.value:''}}).join(',')+'\\n'}}
  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([c],{{type:'text/csv'}}));
  a.download='geometry_review_ratings.csv';a.click()}}
