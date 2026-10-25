@@ -11,6 +11,15 @@ Every number is measured in this repo (source given) or marked as an estimate.
 3. The reference cache has no added prefilter (exact affine + linear). Ordinary and acquisition-aware anti-aliasing
    are explicit ablations (§4).
 
+**Phase 0A outcome (2026-10-25, `PHASE0A_RESULTS.md`):** INCONCLUSIVE, because the audit validity gates G1 and G2 missed
+narrowly; G3 is therefore uninterpretable. Post-Phase-0A engineering decisions:
+- Primary $G$ uses raw DICOM geometry with no misregistration augmentation.
+- $G_{\text{jitter}}$ (bounded, $d\le0.75$) is a secondary arm.
+- $\Sigma_{\text{reg}}$ is a later ablation.
+- Field strength is a robustness stratum.
+- Phase 0B goes ahead.
+- Geometry-noise handling is pre-registered separately before Phase 1.
+
 **Scientific question.** Does representing anisotropic MRI observations by their physical acquisition footprint
 improve cross-plane fusion?
 

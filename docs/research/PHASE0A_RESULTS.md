@@ -6,14 +6,20 @@ per-study saving.
 
 ## Outcome by the pre-registered rule: INCONCLUSIVE
 
-G1 and G2 miss narrowly, and G3 only counts when they pass. I am not relabelling this as a pass.
+**Phase 0A was inconclusive because the registration audit narrowly failed its own validity gates (G1, G2).
+Therefore the apparent G3 failure (80.8% vs 97%, not a narrow miss) cannot be interpreted as a validated estimate of
+true cross-series misregistration.** Not relabelled as a pass; not retuned.
 
-| Gate | Bar | Result |
+Intervals: study-cluster bootstrap, 145 studies, 500 replicates; the pairs within a study are not independent.
+
+| Gate | Bar | Result [95% CI] |
 |---|---|---|
-| G1 precision: injected 5 mm / 3° recovered within 1 mm and 0.5° (cross-plane pairs) | ≥ 95% | **96.8%** (n = 1,020), pass |
-| G1 precision: injected 10 mm / 5° | ≥ 95% | **94.1%** (n = 1,020), fail |
-| G2 cycle residual, Sag → Cor → Ax → Sag triangles, median | ≤ 1 mm | **1.06 mm** (n = 488), fail |
-| G3 cross-plane pairs within 3 mm (max over 9 probes) and 2° | ≥ 97% | **80.8%** (n = 1,020) |
+| G1 precision: injected 5 mm / 3° recovered within 1 mm and 0.5° (cross-plane pairs) | ≥ 95% | **96.8%** [95.3, 98.0] (n = 1,020), pass |
+| G1 precision: injected 10 mm / 5° | ≥ 95% | **94.1%** [92.3, 95.9] (n = 1,020), fail |
+| G2 cycle residual, Sag → Cor → Ax → Sag triangles, median | ≤ 1 mm | **1.06 mm** [1.00, 1.14] (n = 488), fail |
+| G3 cross-plane pairs within 3 mm (max over 9 probes) and 2° | ≥ 97% | **80.8%** [77.0, 84.5] (n = 1,020), not interpretable |
+
+Median correction: 1.68 mm [1.57, 1.80] and 0.66° [0.61, 0.72].
 
 ## What the measured corrections look like (cross-plane pairs; all 3 starts agree in 97.5%)
 
@@ -51,20 +57,28 @@ G1 and G2 miss narrowly, and G3 only counts when they pass. I am not relabelling
 
 Synthetic phantom check: the identity is found within 0.12 mm, and injected errors are recovered within 0.01 mm.
 
-## Proposed next step (needs a decision)
+## Decision (2026-10-25, after the reviewer's check)
 
-1. **Keep the label "inconclusive".** No re-tuning of the audit to reach a pass.
-2. **Take the branch the plan already defines for a G3 failure.**
-   - Use raw DICOM geometry, and train $G$ (and only geometry, never pixels) with rigid misregistration noise drawn from
-     the measured cross-plane corrections (empirical distribution, gross cases included).
-   - This is conservative whether the residuals are real motion or MI bias.
-   - The dose–response test then measures how sensitive $G$ is to exactly this kind of error.
-3. **Optional: a blinded visual check** of about 40 cross-plane pairs at the DICOM placement (20 flagged, 20 random), to
-   say whether the 3–6 mm tail is real.
-4. **Then Phase 0B:** cache v2 and the preprocessing ladder (GPU).
+Phase 0A is inconclusive because the audit validity gates did not both pass, so the G3 branches cannot be invoked
+mechanically. **As a post-Phase-0A engineering decision** (not a pre-registered branch):
 
-**Questions:**
-1. Do you agree with keeping "inconclusive" and taking the noise-model branch, rather than re-tuning the audit?
-2. Is the visual check worth doing before Phase 0B?
-3. Should the field-strength difference (3 T 69.4% vs 1.5 T 88.2% within) be modelled (for example, noise scaled by field
-   strength), or treated as audit-tool behaviour?
+| Item | Decision |
+|---|---|
+| Formal Phase 0A result | INCONCLUSIVE |
+| Retune the registration until it passes | No |
+| Claim that G3 failed scientifically | No: G1 and G2 make it uninterpretable |
+| Primary $G$ geometry | Raw DICOM coordinates, **no misregistration augmentation** (most offsets are below one support SD: d median 0.19, p95 0.64) |
+| Full empirical residual augmentation, gross tail included | **No.** The tail is contaminated by optimizer failure and could teach $\beta_h\to0$ |
+| $G_{\text{jitter}}$ | Secondary arm with bounded perturbations in support units, $d\le0.75$ |
+| $\Sigma_{\text{reg}}=\sigma^2_{\text{reg}}I$ ($\sigma_{\text{reg}}$ 1–2 mm) added inside $d^2$ | Later ablation, only if $G$ works |
+| 40-pair blinded visual check | Yes, in parallel, structured (below). It cannot change the Phase 0A label |
+| Field strength | Robustness stratum, not a noise input. A descriptive clustered regression (3 T, vendor, pair type, FS mismatch, thickness, instability) comes first |
+| Phase 0B | **GO** (independent of how geometry uncertainty is handled) |
+| Phase 1 | Waits until the geometry-noise handling is pre-registered |
+
+**Visual check design.**
+- 40 cross-plane pairs: 20 random and 20 from the upper correction tail.
+- Balanced across Sag–Cor / Sag–Ax / Cor–Ax and, as far as possible, 1.5 T / 3 T.
+- Raw vs MI-corrected placement shown in random order and blinded.
+- Scored as raw better / tie / corrected better, using fixed landmarks: the joint line, the posterior femoral condyle
+  contour and the tibial plateau.

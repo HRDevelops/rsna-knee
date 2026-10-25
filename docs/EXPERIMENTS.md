@@ -3207,3 +3207,28 @@ studies (`python scripts/phase0a_report.py artifacts/phase0a artifacts/phase0a/p
   corrections.
 - Optional blinded visual check of about 40 pairs.
 - Then Phase 0B (GPU), only after the user's go-ahead.
+
+## 2026-10-25 — Phase 0A: wording correction and post-Phase-0A decision (after the reviewer's check)
+
+**Correction.** The RESULT entry above said "take the plan's G3-fail branch". That is not strictly correct. Phase 0A is
+inconclusive because the audit validity gates (G1, G2) did not both pass, so neither G3 branch can be invoked
+mechanically. G1 and G2 missed narrowly; G3 (80.8% vs 97%) did not, but it is uninterpretable.
+
+**Study-cluster bootstrap 95% CIs (145 studies).**
+
+| Measure | Value | 95% CI |
+|---|---|---|
+| G1 at 5 mm / 3° | 96.8% | [95.3, 98.0] |
+| G1 at 10 mm / 5° | 94.1% | [92.3, 95.9] |
+| G2 median | 1.06 mm | [1.00, 1.14] |
+| G3 | 80.8% | [77.0, 84.5] |
+| Median correction | 1.68 mm | [1.57, 1.80] |
+
+**Post-Phase-0A engineering decision (not a pre-registered branch).**
+- Primary G uses raw DICOM geometry with no misregistration augmentation.
+- No empirical-residual augmentation, because the gross tail is contaminated by optimizer failure.
+- Bounded jitter ($d\le0.75$) becomes a secondary arm.
+- $\Sigma_{reg}$ inside $d^2$ is a later ablation.
+- Field strength is a robustness stratum; a clustered descriptive regression comes first.
+- A 40-pair blinded visual check runs in parallel; it does not change the label.
+- Phase 0B: GO. Geometry-noise handling is pre-registered before Phase 1. Details: `docs/research/PHASE0A_RESULTS.md`.
