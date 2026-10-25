@@ -49,6 +49,7 @@ from rsna_knee.wmil import (  # noqa: E402
     MAX_WINDOWS, NUM_SLOTS, SLOT_OFF, TARGET_COLUMNS, WindowMIL, average_state_dicts, candidate_centers,
     gather_windows, normalize_orientation, normalize_tag_side, prepare_input, resolve_slot_sides,
 )
+from rsna_knee.wmil_v2 import WMILv2Dataset, collate_v2, load_manifest_v2  # noqa: E402  (Phase 0B ladder)
 from train import (  # noqa: E402  (reuse the exact metric / IO conventions of the deployed pipeline)
     expand_env, load_gold_truth, load_soft_truth, macro_auc, quota_headroom_gb, safe_torch_save, set_seed,
 )
@@ -124,12 +125,19 @@ def predict(model: WindowMIL, loader: DataLoader, res: int, device: str, dtype) 
     model.eval()
     rows = []
     for b in loader:
-        stack = b["stack"].to(device, non_blocking=True)
-        w = gather_windows(stack, b["centers"].to(device))
+        if "windows" in b:                                      # cache v2: windows already gathered
+            w = b["windows"].to(device, non_blocking=True)
+        else:
+            w = gather_windows(b["stack"].to(device, non_blocking=True), b["centers"].to(device))
         wmask = b["wmask"].to(device)
-        with torch.autocast(device_type="cuda", dtype=dtype):
-            feats = model.encode(prepare_input(w, res).view(w.shape[0], w.shape[1], 3, res, res))
-        logits = model.head(feats.float(), wmask)
+        B, K = w.shape[:2]
+        flat = w.flatten(0, 1)
+        feats = []
+        with torch.autocast(device_type="cuda", dtype=dtype):  # chunked: dense v2 eval has up to 2 x 192 windows
+            for s in range(0, flat.shape[0], 96):
+                feats.append(model.backbone(prepare_input(flat[s:s + 96].unsqueeze(0), res)).float())
+        feats = torch.cat(feats).view(B, K, -1)
+        logits = model.head(feats, wmask)
         for uid, p in zip(b["uid"], torch.sigmoid(logits).float().cpu().numpy()):
             rows.append({"study_uid": uid, **{c: float(v) for c, v in zip(TARGET_COLUMNS, p)}})
     return pd.DataFrame(rows)
@@ -162,14 +170,15 @@ def main() -> None:
         print(f"QUOTA GUARD: starting with headroom {hr}GB < 15GB; checkpoint writes will be skipped", file=sys.stderr)
 
     d, t, m = cfg["data"], cfg["train"], cfg["model"]
-    manifest = load_manifest(Path(d["manifest_dir"]))
+    v2 = int(d.get("cache_version", 1)) == 2
+    manifest = load_manifest_v2(Path(d["manifest_dir"])) if v2 else load_manifest(Path(d["manifest_dir"]))
     labels = pd.read_parquet(d["labels"]).set_index("study_uid")
     folds = pd.read_parquet(d["folds"])[["study_uid", "fold"]]
     side_df = pd.read_csv(d["final_side"])
     final_side = side_df.set_index("study_uid")["final_side"].to_dict()
     bilateral = set(side_df.loc[side_df["source"].isin(["conflict_resolved_by_report", "conflict_unresolved"]), "study_uid"])
 
-    usable = set(manifest.index) & set(labels.index)
+    usable = set(manifest["study_uid"] if v2 else manifest.index) & set(labels.index)
     train_u = sorted(usable & set(folds.loc[(folds.fold != args.fold) & (folds.fold != -1), "study_uid"]))
     val_u = sorted(usable & set(folds.loc[folds.fold == args.fold, "study_uid"]))
     gold_u = sorted(usable & set(folds.loc[folds.fold == -1, "study_uid"]))
@@ -180,13 +189,21 @@ def main() -> None:
     print(f"fold {args.fold}: train {len(train_u)} | val {len(val_u)} | gold {len(gold_u)} | epochs {epochs} "
           f"| k_train {k} | arch {m['arch']} res {m['res']}", flush=True)
 
-    mk = lambda u, tr, kk: WMILDataset(u, d["cache_dir"], manifest, labels, final_side, bilateral, tr, kk)  # noqa: E731
+    if v2:
+        rung = d.get("v2", {}) or {}
+        print(f"cache v2 rung: {rung}", flush=True)
+        mk = lambda u, tr, kk: WMILv2Dataset(u, d["cache_dir"], manifest, labels, final_side, bilateral, tr, kk,  # noqa: E731
+                                             **rung)
+        coll = collate_v2
+    else:
+        mk = lambda u, tr, kk: WMILDataset(u, d["cache_dir"], manifest, labels, final_side, bilateral, tr, kk)  # noqa: E731
+        coll = collate
     train_loader = DataLoader(mk(train_u, True, k), batch_size=bs, shuffle=True, num_workers=args.workers,
-                              collate_fn=collate, drop_last=True, persistent_workers=args.workers > 0,
+                              collate_fn=coll, drop_last=True, persistent_workers=args.workers > 0,
                               pin_memory=True)
     eval_bs = 2
-    val_loader = DataLoader(mk(val_u, False, k), batch_size=eval_bs, num_workers=4, collate_fn=collate)
-    gold_loader = DataLoader(mk(gold_u, False, k), batch_size=eval_bs, num_workers=2, collate_fn=collate)
+    val_loader = DataLoader(mk(val_u, False, k), batch_size=eval_bs, num_workers=4, collate_fn=coll)
+    gold_loader = DataLoader(mk(gold_u, False, k), batch_size=eval_bs, num_workers=2, collate_fn=coll)
 
     prev = np.clip(np.stack([[labels.loc[u, f"{c}__probability"] for c in TARGET_COLUMNS] for u in train_u]).mean(0),
                    0.03, 0.7)
@@ -243,8 +260,10 @@ def main() -> None:
         model.train()
         tot, n_b, t0 = 0.0, 0, time.time()
         for b in train_loader:
-            stack = b["stack"].to(device, non_blocking=True)
-            w = gather_windows(stack, b["centers"].to(device))
+            if "windows" in b:                                  # cache v2: windows already gathered
+                w = b["windows"].to(device, non_blocking=True)
+            else:
+                w = gather_windows(b["stack"].to(device, non_blocking=True), b["centers"].to(device))
             gain = None
             if cfg["aug"].get("intensity_jitter", 0) > 0:
                 gain = 1.0 + (torch.rand(w.shape[0], device=device) * 2 - 1) * cfg["aug"]["intensity_jitter"]
