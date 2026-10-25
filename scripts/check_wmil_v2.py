@@ -43,9 +43,47 @@ uids = sorted(set(man2.study_uid) & set(man1.index))[:N]
 
 ds = WMILv2Dataset(uids, R / "data/cache_v2", man2, None, final_side, bilateral, train=False, k=12,
                    series="exp018_slots", slices="exp018", plane_mix="uniform", crop="c140")
-corrs, nbad = [], 0
+def exp018_plan(u, r, sides):
+    """exp018's eval windows as (series_uid, channel-ordered source-slice triplet in stored order, mirror), rebuilt from
+    its own rules: slot slices = linspace over the 6-94% span of the (ascending patient-x for sagittal) order, sagittal
+    right knees reverse the whole slot, coronal/axial mirror when (side == R) != (row_x < 0), window = [c-1, c, c+1]."""
+    out = []
+    for j, (name, plane, _, L) in enumerate(wmil.SLOT_SPECS):
+        if not bool(r[f"present_{j}"]):
+            continue
+        n = int(r[f"n_native_{j}"])
+        order = np.arange(n)[::-1] if (plane == "Sagittal" and float(r[f"normal_x_{j}"]) < 0) else np.arange(n)
+        lo, hi = int(round(wmil.SPAN[0] * (n - 1))), int(round(wmil.SPAN[1] * (n - 1)))
+        slot = order[np.clip(np.round(np.linspace(lo, hi, L)).astype(int), 0, n - 1)]
+        mirror = False
+        if sides[j] is not None:
+            if plane == "Sagittal":
+                if sides[j] == "R":
+                    slot = slot[::-1]
+            else:
+                mirror = (sides[j] == "R") != (float(r[f"row_x_{j}"]) < 0)
+        out += [(r[f"series_{j}"], tuple(int(t) for t in slot[c - 1:c + 2]), mirror) for c in range(1, L - 1)]
+    return out
+
+
+corrs, nbad, n_win = [], 0, 0
 for i, u in enumerate(uids):
     item = ds[i]
+    r0 = man1.loc[u]
+    pres = [bool(r0[f"present_{j}"]) for j in range(wmil.NUM_SLOTS)]
+    mt = [{"row_x": float(r0[f"row_x_{j}"]), "cx": float(r0[f"cx_{j}"]), "tag_laterality": r0[f"tag_{j}"]}
+          if pres[j] else None for j in range(wmil.NUM_SLOTS)]
+    if u in bilateral:
+        sd = [wmil.normalize_tag_side(m["tag_laterality"]) if m else None for m in mt]
+    else:
+        fs0 = final_side.get(u)
+        sd = wmil.resolve_slot_sides(mt, fs0 if isinstance(fs0, str) else None)
+    p_old, p_new = exp018_plan(u, r0, sd), ds.plan(i)
+    n_win += len(p_old)
+    if sorted(p_old) != sorted(p_new):
+        nbad += 1
+        diff = set(p_old) ^ set(p_new)
+        print(f"{u[-8:]}: SOURCE-SLICE PLAN MISMATCH ({len(diff)} differing windows), e.g. {sorted(diff)[:3]}")
     r = man1.loc[u]
     present = np.array([bool(r[f"present_{j}"]) for j in range(wmil.NUM_SLOTS)])
     metas = [{"row_x": float(r[f"row_x_{j}"]), "cx": float(r[f"cx_{j}"]), "tag_laterality": r[f"tag_{j}"]}
@@ -59,22 +97,24 @@ for i, u in enumerate(uids):
     cs = wmil.candidate_centers(present)
     w1 = np.stack([stack[c - 1:c + 2] for c in cs]).astype(float)
     w2 = item["windows"][item["wmask"]].numpy().astype(float)
-    if len(w1) != len(w2):
+    if len(w1) != len(w2) or len(w1) != len(p_old):
         nbad += 1
-        print(f"{u[-8:]}: window count v1 {len(w1)} vs v2 {len(w2)}")
+        print(f"{u[-8:]}: window count v1 {len(w1)} vs v2 {len(w2)} vs plan {len(p_old)}")
         continue
-    # window-MIL is permutation-invariant over windows; exp018 reverses a right sagittal slot's whole slice order, so
-    # its windows are the same triplets enumerated in reverse. Match each exp018 window to its best v2 window.
-    A = (w1 - w1.mean(axis=(1, 2, 3), keepdims=True)).reshape(len(w1), -1)
-    B = (w2 - w2.mean(axis=(1, 2, 3), keepdims=True)).reshape(len(w2), -1)
-    C = (A / np.linalg.norm(A, axis=1, keepdims=True)) @ (B / np.linalg.norm(B, axis=1, keepdims=True)).T
-    best = C.argmax(1)
-    if len(set(best.tolist())) != len(best):
-        nbad += 1
-        print(f"{u[-8:]}: matching is not one-to-one")
-    corrs += C.max(1).tolist()
+    # exact pairing by source-slice plan entry (series, channel-ordered triplet, mirror); the per-pair correlation then
+    # tests the pixels channel by channel, including the left-right mirror. Duplicate entries (series with fewer
+    # native slices than the slot) are paired in order.
+    pos = {}
+    for k, key in enumerate(p_new):
+        pos.setdefault(key, []).append(k)
+    for k, key in enumerate(p_old):
+        b = w2[pos[key].pop(0)]
+        corrs.append(min(np.corrcoef(w1[k][ch].ravel(), b[ch].ravel())[0, 1] for ch in range(3)))
 corrs = np.array(corrs)
-print(f"B1 vs exp018: {len(uids)} studies, count mismatches {nbad}, windows {len(corrs)}, corr median "
+print(f"B1 source-slice plan (series, channel-ordered triplet, mirror) identical to exp018: "
+      f"{len(uids) - nbad}/{len(uids)} studies, {n_win} windows")
+assert nbad == 0, "B1 does not reproduce exp018's source slices / channel order"
+print(f"B1 vs exp018 pixels: {len(uids)} studies, windows {len(corrs)}, corr median "
       f"{np.median(corrs):.4f}, p1 {np.percentile(corrs, 1):.4f}, min {corrs.min():.4f}, share > 0.97 "
       f"{(corrs > 0.97).mean():.3%}")
 

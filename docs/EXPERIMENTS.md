@@ -3265,3 +3265,33 @@ plus linear interpolation, no prefilter.
   changed for it now.
 - Dense evaluation now uses about 157 windows per study (exp018: 54).
 - Anti-aliasing ablation $B1_{\text{AA}}$: not run, since B1 is null and the reference keeps no prefilter.
+
+## 2026-10-25 — B1 channel-order check, and Phase 0C PRE-REGISTRATION (written before any 0C score)
+
+**B1 source-slice check (after the reviewer's concern).** The earlier B1 check matched windows by best correlation,
+which could hide a swapped slice order inside a window (the network reads the three slices as RGB channels and is not
+invariant to swapping them).
+- `scripts/check_wmil_v2.py` now rebuilds exp018's eval windows from exp018's own rules as (series,
+  channel-ordered source-slice triplet, mirror flag) and asserts equality with the v2 dataset's plan.
+- **Identical for 150/150 studies (7,744 windows)**, including right-knee sagittal series. Only the enumeration order of
+  whole windows differs, and MIL attention is invariant to that.
+- Per-channel pixel correlation of exactly paired windows: median 0.9997, min 0.976.
+- B1 was therefore a clean pixel-only change; Phase 0B stands.
+
+**Phase 0C pre-registration.**
+- **What runs.** $B_{\text{cap}}$ (token transformer without geometry, PLAN_v1_3 §2.4–2.6, §3.1) on the frozen B5 data
+  pipeline; grids $g\in\{4,6,12\}$; fold 0; seeds 42 / 43. Each run is evaluated in both inference modes from the same
+  top-3-averaged checkpoint:
+  - bagged: mean of $R=8$ random plane-balanced passes of 12 windows;
+  - dense: all windows in one pass, capped at 192.
+- **Default:** 6×6 grid with bagged inference (the design point of the geometry calculations).
+- **Grid rule.** Another grid replaces 6×6 only if its 2-seed mean fold-validation macro-AUC (bagged) beats 6×6 by
+  **≥ +0.004**.
+- **Mode rule.** On the chosen grid, dense replaces bagged only if the paired cluster bootstrap over report clusters
+  (both seeds' predictions averaged; 1,000 reps) gives ΔAUC > 0 **and** a 95% CI lower bound > 0. Otherwise bagged.
+- **Feasibility exclusion (engineering, not a performance rejection).** 12×12 dense (about 22,600 tokens per study) is
+  omitted if a fixed smoke test fails: out of memory at batch 1 on one H100, or > 3 s per study. 12×12 bagged (1,728
+  tokens per pass) stays.
+- Gold-58 plays no role in any 0C choice. The chosen $(g^*, m^*)$ is copied unchanged into $G$.
+- **ACL, for the record.** Phase 0B moved fold-0 ACL 0.943 → 0.924. It is documented with paired deltas and seed
+  consistency once 0C exists; it does not change the pipeline.

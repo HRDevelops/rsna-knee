@@ -110,7 +110,9 @@ class WMILv2Dataset(Dataset):
             return [(byuid[c["series_uid"]], wmil.SLOT_SPECS[i][0]) for i, c in sorted(chosen.items())]
         return [(r, None) for r in rows]
 
-    def __getitem__(self, i):
+    def plan(self, i):
+        """The windows of item i as (series_uid, channel-ordered source-slice triplet in stored order, mirror flag).
+        __getitem__ renders exactly this plan, so the B1 check can compare it index-by-index with exp018."""
         uid = self.uids[i]
         sel = self._select(uid)
         sides = _series_side([r for r, _ in sel], self.final_side.get(uid), uid in self.bilateral)
@@ -123,22 +125,31 @@ class WMILv2Dataset(Dataset):
         else:
             picks = cands if len(cands) <= self.max_eval else \
                 [cands[j] for j in np.linspace(0, len(cands) - 1, self.max_eval).round().astype(int)]
-        vols = {}
         out = []
         for si, trip in picks:
             r, _ = sel[si]
-            if si not in vols:
-                vols[si] = np.load(self.cache_dir / uid / f"{r['series_uid']}.npy", mmap_mode="r")
-            w = np.stack([vols[si][t] for t in trip])
-            if self.crop == "c140":
-                w = w[:, CENTRAL_OFF:CENTRAL_OFF + CENTRAL, CENTRAL_OFF:CENTRAL_OFF + CENTRAL]
-            s = sides[si]
+            s, mirror = sides[si], False
             if s is not None:
                 if r["plane"] == "Sagittal":
                     if s == "R":
-                        w = w[::-1]
-                elif (s == "R") != (r["row_x"] < 0):
-                    w = w[:, :, ::-1]
+                        trip = tuple(trip[::-1])
+                else:
+                    mirror = (s == "R") != (r["row_x"] < 0)
+            out.append((r["series_uid"], tuple(int(t) for t in trip), mirror))
+        return out
+
+    def __getitem__(self, i):
+        uid = self.uids[i]
+        vols = {}
+        out = []
+        for sid, trip, mirror in self.plan(i):
+            if sid not in vols:
+                vols[sid] = np.load(self.cache_dir / uid / f"{sid}.npy", mmap_mode="r")
+            w = np.stack([vols[sid][t] for t in trip])
+            if self.crop == "c140":
+                w = w[:, CENTRAL_OFF:CENTRAL_OFF + CENTRAL, CENTRAL_OFF:CENTRAL_OFF + CENTRAL]
+            if mirror:
+                w = w[:, :, ::-1]
             out.append(np.ascontiguousarray(w))
         K = self.k if self.train else self.max_eval
         H = out[0].shape[-1]
