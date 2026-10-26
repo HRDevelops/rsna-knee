@@ -37,16 +37,18 @@ from rsna_knee.tokens import TokenMIL  # noqa: E402
 from rsna_knee.wmil_v2 import TokenV2Dataset, collate_tokens, load_manifest_v2  # noqa: E402
 
 A = Path(os.environ["RSNA_ROOT"]) / "artifacts"
+EXP = sys.argv[1] if len(sys.argv) > 1 else "p1_graw"   # p2_glocal: local follow-up
 out = []
 for s in (42, 43):
-    cfg = expand_env(yaml.safe_load((A / f"p1_graw_s{s}/fold0/config.yaml").read_text()))
+    cfg = expand_env(yaml.safe_load((A / f"{EXP}_s{s}/fold0/config.yaml").read_text()))
     d, m = cfg["data"], cfg["model"]
     man = load_manifest_v2(Path(d["manifest_dir"]))
     side = pd.read_csv(d["final_side"]).set_index("study_uid")["final_side"].to_dict()
     folds = pd.read_parquet(d["folds"])
     val = sorted(set(folds[folds.fold == 0].study_uid) & set(man.study_uid))
-    model = TokenMIL(m["arch"], grid=6, geometry="cross_plane", pretrained=False, grad_checkpointing=False).cuda()
-    model.load_state_dict(torch.load(A / f"p1_graw_s{s}/fold0/best.pt", map_location="cuda")["model"])
+    model = TokenMIL(m["arch"], grid=6, geometry="cross_plane", pretrained=False, grad_checkpointing=False,
+                     features=m.get("features", "final")).cuda()
+    model.load_state_dict(torch.load(A / f"{EXP}_s{s}/fold0/best.pt", map_location="cuda")["model"])
     beta = model.beta.detach().clone()
     ds = TokenV2Dataset(val, d["cache_dir"], man, None, side, set(), False, 12, grid=6, mode="dense", geometry=True,
                         **d["v2"])
@@ -75,4 +77,4 @@ for s in (42, 43):
           flush=True)
     out.append(dict(seed=s, auc_g=ag, auc_beta0=a0, mean_abs_dp=float(diff.mean()), max_abs_dp=float(diff.max()),
                     bias_pct=json.dumps(np.round(q, 4).tolist())))
-pd.DataFrame(out).to_csv(A / "p1_beta_off_diagnostic.csv", index=False)
+pd.DataFrame(out).to_csv(A / f"{EXP}_beta_off_diagnostic.csv", index=False)

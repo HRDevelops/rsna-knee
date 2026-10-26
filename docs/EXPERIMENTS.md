@@ -3401,3 +3401,39 @@ H1 is not supported at screening. Gold-58 was not used.
 - Probe on G_local, seed 42, 50 steps: median |dL/dbeta| = 5.592e-3 -> **eta_beta = 0.2065**, written into
   configs/p2_glocal_s42.yaml and p2_glocal_s43.yaml.
 - Launch: B_local and G_local, fold 0, seeds 42 / 43 (fresh paired runs).
+
+## 2026-10-26 — Local follow-up RESULT: STOP (geometry not used) → geometry research line TERMINATED
+
+Fresh paired runs, fold 0, `backbone.stages.1` features (jobs 33788–33791, about 1.2 h each); $\eta_\beta$ 0.2065.
+
+| Seed | $G_{\text{local}}$ dense | $B_{\text{local}}$ dense | $\Delta_{\text{geo}}$ | $G_{\text{local}}$, donor geometry | $\Delta_{\text{swap}}$ |
+|---|---|---|---|---|---|
+| 42 | 0.9281 | 0.9237 | +0.0044 | 0.9281 | +0.00002 |
+| 43 | 0.9257 | 0.9344 | −0.0087 | 0.9257 | 0.0000 |
+
+**Rule.** $\Delta_{\text{swap}}$ < 0.001 in both seeds, so **STOP**. Per `PHASE2_LOCAL_PREREG.md` this **terminates the
+geometry research line.** No fold-1 run, no further arms. Gold-58 was not used.
+
+**Mechanism report (pre-registered for both experiments).** $\beta$-off is the same weights with every $\beta_h$ = 0
+(`scripts/phase1_beta_off.py`). The bias column gives percentiles of the real cross-plane bias $-\beta d^2/2$ in logits.
+
+| Model | Seed | AUC($G$) − AUC($\beta$=0) | Mean / max \|Δp\| | Bias p1 / p5 / p25 / p50 / p75 / p95 |
+|---|---|---|---|---|
+| $G_{\text{raw}}$ (final-stage) | 42 | −0.0000 | 3.7e-4 / 0.008 | −6.1 / −4.0 / −1.7 / −0.77 / −0.32 / −0.08 |
+| $G_{\text{raw}}$ (final-stage) | 43 | −0.0000 | 4.2e-4 / 0.014 | −6.4 / −4.3 / −1.8 / −0.67 / −0.24 / −0.06 |
+| $G_{\text{local}}$ | 42 | +0.0002 | 3.0e-3 / 0.042 | −32.2 / −18.6 / −7.0 / −3.3 / −1.2 / −0.25 |
+| $G_{\text{local}}$ | 43 | +0.0001 | 2.6e-3 / 0.048 | −28.7 / −18.7 / −7.7 / −3.6 / −1.4 / −0.30 |
+
+**Reading (descriptive).**
+- **Final-stage tokens.** The cross-plane biases are moderate (median −0.7 logits), but removing them does not change
+  the predictions: the pathway is functionally dormant.
+- **Local tokens.** The model learned strong footprint locality (median −3.4 logits, p5 about −19, so cross-plane
+  attention is close to restricted to compatible footprints). Turning it off still moves AUC by at most +0.0002.
+  Replacing the study's own geometry with a donor's (layouts differing by a median 26 mm) moves AUC by 0.
+- **So:** the networks use geometry as a locality *structure*, but the *correct* physical correspondence carries no
+  diagnostic information beyond what $B$ already has, on this task, labels and fold.
+- **Local features are much weaker overall** (about 0.92–0.93 vs 0.95). Removing the global-attention stages costs
+  more than any geometry could add.
+
+**Status of the research hypotheses.** H1 is not supported, in two pre-registered tests with causal controls. H2–H4
+depend on H1 and are not pursued. The preprocessing work (cache v2, B5) and the tooling stay valid.
