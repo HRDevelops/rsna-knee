@@ -3437,3 +3437,39 @@ geometry research line.** No fold-1 run, no further arms. Gold-58 was not used.
 
 **Status of the research hypotheses.** H1 is not supported, in two pre-registered tests with causal controls. H2–H4
 depend on H1 and are not pursued. The preprocessing work (cache v2, B5) and the tooling stay valid.
+
+## 2026-11-02 — Blinded 40-pair geometry review: unblinded (descriptive only; changes no label, model or threshold)
+
+**Setup.** One rater; all 160 answers; A/B order randomized; key held apart until the ratings were exported.
+Ratings: `artifacts/geometry_review/geometry_review_ratings.csv`. Key: `artifacts/geometry_review_KEY_do_not_open/key.csv`.
+
+| Stratum (Phase 0A MI correction) | n | Raw DICOM preferred | MI correction preferred | Indistinguishable | Median confidence |
+|---|---|---|---|---|---|
+| Low (≤ 1.5 mm, stable) | 10 | 0.1 | 0.7 | 0.2 | 3.5 |
+| Moderate (1.5–3 mm) | 10 | 0.2 | 0.8 | 0 | 4 |
+| High (> 3 mm, stable) | 10 | 0.1 | 0.9 | 0 | 4 |
+| Unstable starts or gross tail | 10 | **0.9** | 0.1 | 0 | 5 |
+| All | 40 | 0.32 | 0.62 | 0.05 | 4 |
+
+**Breakdowns.**
+- By pair type: Cor–Ax 0.38 / 0.62 raw / MI; Sag–Ax 0.33 / 0.58; Sag–Cor 0.25 / 0.67.
+- By field: 3 T 0.29 / 0.62; below 3 T 0.38 / 0.62.
+- When raw was preferred, the mismatch was mostly "gross" (9 of 13).
+- When MI was preferred, it was "clear" (19) or "subtle" (6); the mismatch type was mostly translation (19 of 25).
+
+**Reading.**
+- **Stable registrations** (24 of 30): the MI-corrected placement was preferred, mostly as a visible translation. This
+  suggests the raw DICOM placements carry real inter-sequence offsets of a few mm, consistent with patient motion
+  between sequences.
+- **Unstable or gross registrations:** the raw placement was preferred 9 of 10 times, with high confidence. This
+  confirms Phase 0A's gross tail is optimizer failure.
+
+**Caveats.**
+- Single rater, not a radiologist; n = 40.
+- Renderings of "clear" differences at ≤ 1.5 mm corrections were not checked for cues other than alignment.
+
+**What this does not change.**
+- Phase 0A stays INCONCLUSIVE.
+- Both Phase 1 STOPs stand (`PHASE1_PREREG.md` §6). They rest on the donor swap, whose geometry differs by a median
+  26 mm, against offsets of about 1.7 mm (footprint d about 0.2) here. Few-mm residual misregistration is too small to
+  explain a donor-swap null.

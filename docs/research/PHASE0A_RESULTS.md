@@ -82,3 +82,7 @@ mechanically. **As a post-Phase-0A engineering decision** (not a pre-registered 
 - Raw vs MI-corrected placement shown in random order and blinded.
 - Scored as raw better / tie / corrected better, using fixed landmarks: the joint line, the posterior femoral condyle
   contour and the tibial plateau.
+
+## Addendum 2026-11-02: blinded 40-pair review (descriptive)
+
+Stable pairs: the MI-corrected placement was preferred in 24 of 30, mostly visible translations, suggesting real few-mm inter-sequence offsets. Unstable or gross pairs: the raw placement was preferred in 9 of 10, confirming the gross tail is optimizer failure. One rater; n = 40. The INCONCLUSIVE label is unchanged. Details are in docs/EXPERIMENTS.md, 2026-11-02.
