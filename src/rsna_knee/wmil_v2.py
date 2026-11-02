@@ -87,11 +87,12 @@ def _series_side(rows: list[dict], study_side, bilateral: bool) -> list:
 class WMILv2Dataset(Dataset):
     def __init__(self, uids, cache_dir, man: pd.DataFrame, labels, final_side: dict, bilateral: set, train: bool,
                  k: int, series: str = "exp018_slots", slices: str = "exp018", plane_mix: str = "uniform",
-                 crop: str = "c140", max_eval_windows: int = 192):
+                 crop: str = "c140", max_eval_windows: int = 192, triplet_mm: float | None = None):
         self.uids, self.cache_dir, self.labels, self.train, self.k = uids, Path(cache_dir), labels, train, k
         self.final_side, self.bilateral = final_side, bilateral
         self.series_mode, self.slices, self.plane_mix, self.crop = series, slices, plane_mix, crop
         self.max_eval = max_eval_windows
+        self.triplet_mm = triplet_mm
         self.by_study = {u: g.to_dict("records") for u, g in man.groupby("study_uid")}
 
     def __len__(self):
@@ -106,7 +107,10 @@ class WMILv2Dataset(Dataset):
             take = np.clip(np.round(np.linspace(lo, hi, wmil.SLOT_SPECS[[s[0] for s in wmil.SLOT_SPECS].index(slot)][3]))
                            .astype(int), 0, n - 1)
             return [tuple(order[take[j - 1:j + 2]]) for j in range(1, len(take) - 1)]
-        step = max(1, int(round(3.0 / r["spacing"]))) if r["spacing"] < 2.0 else 1
+        if self.triplet_mm:                                  # ACL spacing test: fixed physical triplet half-spacing
+            step = max(1, int(round(self.triplet_mm / r["spacing"])))
+        else:
+            step = max(1, int(round(3.0 / r["spacing"]))) if r["spacing"] < 2.0 else 1
         cs = range(max(lo, step), min(hi, n - 1 - step) + 1)
         return [tuple(order[[p - step, p, p + step]]) for p in cs] or [tuple(order[[max(0, n // 2 - 1), n // 2,
                                                                                     min(n - 1, n // 2 + 1)]])]

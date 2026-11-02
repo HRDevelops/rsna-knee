@@ -1,0 +1,35 @@
+# Triplet-spacing test (docs/EXPERIMENTS.md 2026-11-02): frozen B5 + triplet half-spacing 7.0 mm, seed 43, fold 0.
+experiment: p3_tri7_s43
+seed: 43
+data:
+  cache_dir: ${RSNA_ROOT}/data/cache_v2
+  manifest_dir: ${RSNA_ROOT}/artifacts/cache_manifests_v2
+  labels: ${RSNA_ROOT}/artifacts/labels/labels_v3_candidate.parquet
+  folds: ${RSNA_ROOT}/artifacts/folds.parquet
+  final_side: ${RSNA_ROOT}/artifacts/final_side.csv
+  cache_version: 2
+  v2:
+    series: all
+    slices: native
+    plane_mix: balanced
+    crop: f160
+    triplet_mm: 7.0
+model:
+  arch: coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k
+  res: 384
+  grad_checkpointing: true
+  head_dropout: 0.2
+train:
+  epochs: 16
+  batch_studies: 8
+  k_train: 12
+  bb_lr: 3.0e-05
+  head_lr: 0.001
+  weight_decay: 0.02
+  pct_start: 0.15
+  grad_clip: 3.0
+  topk: 3
+  precision: bf16
+aug:
+  intensity_jitter: 0.1
+  laterality_swap_prob: 0.0

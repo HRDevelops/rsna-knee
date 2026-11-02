@@ -3473,3 +3473,31 @@ Ratings: `artifacts/geometry_review/geometry_review_ratings.csv`. Key: `artifact
 - Both Phase 1 STOPs stand (`PHASE1_PREREG.md` §6). They rest on the donor swap, whose geometry differs by a median
   26 mm, against offsets of about 1.7 mm (footprint d about 0.2) here. Few-mm residual misregistration is too small to
   explain a donor-swap null.
+
+## 2026-11-02 — ACL forensics step 1 RESULT, and triplet-spacing test PRE-REGISTRATION
+
+**Step 1 (no training; `scripts/ladder_label_bootstrap.py`).** Paired per-label cluster bootstrap of the Phase 0B
+ladder: fold 0, seed-averaged, 879 studies / 672 clusters, 1,000 reps.
+
+| Step | Macro | ACL | Notable other labels |
+|---|---|---|---|
+| B0 → B1 (pixels only) | −0.0009 [−0.0034, +0.0011] | −0.0074 [−0.0233, +0.0062] | — |
+| B1 → B2 (native-adjacent windows) | — | **−0.0199 [−0.0442, −0.0021]** | Medial meniscus +0.0043 [+0.0015, +0.0069]; lateral meniscus +0.0080 [+0.0000, +0.0164] |
+| B0 → B5 (whole ladder) | −0.0001 | **−0.0207 [−0.0436, −0.0031]** | — |
+
+- The other steps show no ACL effect. Elsewhere, B3 → B4 has MCL +0.017 [+0.0004, +0.047].
+- **Caution:** 72 label × step intervals, so some marginal exclusions of 0 are expected by chance.
+- **Reading:** the ACL loss is tied to native adjacency (true neighbouring slices, ±1 native slice ≈ ±3.5 mm). exp018's
+  subsampled "adjacent" windows spanned about ±5–13 mm.
+
+**Pre-registration: triplet spacing test** (`src/rsna_knee/wmil_v2.py`, option `triplet_mm`).
+- **Arms.** The frozen B5 window-MIL pipeline with only the in-window slice spacing changed: the triplet is centre ±
+  round(Δ / slice spacing) native slices, with Δ = **7 mm** (`p3_tri7`) and Δ = **10.5 mm** (`p3_tri10`).
+- **Comparator.** The existing B5 runs (`p0b_B5_s42/s43`; same code path, Δ = native adjacency).
+- **Runs.** Fold 0, seeds 42 / 43, exp018 budget and selection; gold-58 not used.
+- **Primary endpoint.** ACL fold-validation AUC: seed-averaged, paired cluster bootstrap vs B5 (1,000 reps).
+- **Guard.** Macro-AUC change ≥ −0.002 (point estimate).
+- **Adoption rule.** An arm counts as an improvement only if its ACL 95% CI lower bound is > 0 **and** it meets the
+  guard. If both arms qualify, take the one with the larger macro.
+- **Report.** All labels are reported. A finding of "native adjacency hurts ACL" is stated as replicated only if an arm
+  qualifies. Nothing is changed in any frozen pipeline unless an arm qualifies.
