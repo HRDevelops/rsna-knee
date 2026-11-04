@@ -3501,3 +3501,22 @@ ladder: fold 0, seed-averaged, 879 studies / 672 clusters, 1,000 reps.
   guard. If both arms qualify, take the one with the larger macro.
 - **Report.** All labels are reported. A finding of "native adjacency hurts ACL" is stated as replicated only if an arm
   qualifies. Nothing is changed in any frozen pipeline unless an arm qualifies.
+
+## 2026-11-04 — Triplet-spacing test RESULT (pre-registered 2026-11-02): no arm qualifies, B5 unchanged
+
+Jobs 37113–37116 (all COMPLETED, about 2h37 each). `scripts/p3_triplet_eval.py`: fold 0, 879 studies / 672 report
+clusters, seed-averaged (42 / 43), paired cluster bootstrap vs B5, 1,000 reps.
+
+| Arm | Macro | ACL | Δ macro vs B5 | Δ ACL vs B5 | Decision |
+|---|---|---|---|---|---|
+| B5 (native adjacency, about ±3.5 mm) | 0.9586 | 0.9301 | — | — | comparator |
+| tri7 (±7 mm) | 0.9566 | 0.9227 | −0.0020 [−0.0053, +0.0008] | −0.0074 [−0.0221, +0.0073] | does not qualify |
+| tri10 (±10.5 mm) | 0.9552 | 0.9082 | −0.0034 [−0.0059, −0.0013] | **−0.0219 [−0.0384, −0.0065]** | does not qualify |
+
+- **Other labels whose interval excludes 0.** Lateral meniscus is −0.012 in both arms; contusion −0.004 / −0.005;
+  PF OA +0.005 (tri7 only).
+- **Reading.** Wider physical spacing hurts ACL rather than helping, and monotonically. So the B1→B2 ACL drop is
+  *not* explained by native adjacency being too narrow, and the hypothesis "native adjacency hurts ACL" is not
+  supported.
+- **What remains open.** The ladder ACL drop is within per-label seed noise (B0 seeds differ by 0.022). No further
+  ACL runs are planned.
