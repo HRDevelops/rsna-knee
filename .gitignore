@@ -25,3 +25,8 @@ docs/report/*.out
 docs/report/*.pdf
 docs/report/stress_fill.*
 docs/report/comment.cut
+
+# contain competition MRI images: never commit
+docs/presentation/*.pptx
+docs/figures/deck_mri_strip.*
+docs/figures/attention_windows_gold58*
