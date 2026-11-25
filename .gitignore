@@ -30,3 +30,5 @@ docs/report/comment.cut
 docs/presentation/*.pptx
 docs/figures/deck_mri_strip.*
 docs/figures/attention_windows_gold58*
+docs/presentation/*.mp4
+docs/presentation/*.srt
