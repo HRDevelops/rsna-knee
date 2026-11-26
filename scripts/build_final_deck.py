@@ -333,23 +333,31 @@ def build():
 
     # ---------------------------------------------------------------- 11. Demonstration
     s = base(prs, 11, "5 · Demonstration", "Demo: One Study In, Twelve Probabilities and Their Evidence Out", (
-        "[9:55-11:05] Demonstration. Here is the offline Kaggle submission notebook running the model on a test "
-        "study: it decodes the DICOM series, builds the five slots, runs the ten checkpoints and writes twelve "
-        "probabilities. [Show the notebook or the recorded clip.] The figure shows what the model looked at, for "
-        "three gold studies chosen by a fixed rule before any map was viewed, so this is a best-case illustration. "
-        "For ACL the attention sits on the central sagittal fat-suppressed windows; for the medial meniscus on "
-        "coronal fat-suppressed windows; for Baker's cyst on axial windows. The top four windows carry 31 to 48 "
-        "percent of the attention, so a radiologist can check a handful of slices instead of the whole exam."))
-    pic(s, "attention_windows_gold58_slide.png", 0.55, 1.3, 7.9, 5.6)
-    card(s, 8.65, 1.3, 4.1, 5.6, "Live demo (about 1 minute)", [
-        ("1. Input: one study folder of DICOM series", dict(size=12)),
-        ("2. Decode → 5 slots → right knee mirrored", dict(size=12)),
-        ("3. 10 checkpoints → 12 probabilities", dict(size=12)),
-        ("4. Evidence: top-attended windows per finding", dict(size=12)),
-        ("Runs offline in the Kaggle notebook: about 4.5 s per study on one T4 GPU for 5 folds.",
-         dict(size=11.5, color=MUTED)),
-        ("Left: three gold-58 studies chosen by a fixed rule (best case, not a hit rate). The top 4 of 54 windows "
-         "carry 31–48% of the attention.", dict(size=11.5, bold=True, color=NAVY)),
+        "[9:55-11:05] Click the video to play; it runs 81 seconds, narrate over it. Title: three studies from the 58 "
+        "expert-labelled ones; the model never trained on them, and they were picked by a fixed rule before we looked "
+        "at any prediction. Input: the DICOM series are decoded into five anatomical slots in about one second; a "
+        "missing sequence is simply masked. Predictions: twelve probabilities, green where the radiologists said "
+        "positive. Study one: ACL, MCL, medial meniscus and fracture are all ranked high; contusion is a false "
+        "positive. Evidence: for ACL the model attends to the central sagittal fat-suppressed slices, the four top "
+        "windows carry 44 percent of the attention. Study two: the effusion and Baker's cyst are near-certain. Study "
+        "three is a mostly normal knee: everything is low, but patellofemoral OA, which the experts called positive, "
+        "scored only 0.33. That is a miss, and it is the weak label we discussed on slide 8. Last card: the same code "
+        "ran offline on Kaggle on about 1,300 hidden studies."))
+    demo = ROOT / "docs/presentation/Team10_demo.mp4"
+    if demo.exists():  # recorded demo (scripts/demo_study.py + make_demo_video.py), plays inside PowerPoint
+        s.shapes.add_movie(str(demo), Inches(0.55), Inches(1.6), Inches(7.9), Inches(4.444),
+                           poster_frame_image=str(ROOT / "artifacts/demo/frames/00_title.png"), mime_type="video/mp4")
+    else:
+        pic(s, "attention_windows_gold58_slide.png", 0.55, 1.3, 7.9, 5.6)
+    card(s, 8.65, 1.3, 4.1, 5.6, "Recorded demo (81 s, click to play)", [
+        ("1. Three gold-58 studies the model never saw, picked by a fixed rule", dict(size=12)),
+        ("2. DICOM → 5 slots in about 1 s", dict(size=12)),
+        ("3. 12 probabilities vs the radiologists", dict(size=12)),
+        ("4. The 4 most-attended slices for one finding", dict(size=12)),
+        ("Shown honestly: one false positive (study 1, contusion) and one miss (study 3, PF OA 0.33).",
+         dict(size=11.5, bold=True, color=NAVY)),
+        ("Efficiency-track model (2 checkpoints), run on the university H100 cluster with the submission code.",
+         dict(size=11, color=MUTED)),
     ], BLUE)
 
     # ---------------------------------------------------------------- 12. Conclusions
